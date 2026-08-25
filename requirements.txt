@@ -1,0 +1,10 @@
+DrissionPage==4.1.1.4
+pyvirtualdisplay==3.0
+requests[socks]>=2.34.2
+telethon==1.36.0
+python-socks[asyncio]==2.0.0
+SpeechRecognition==3.17.0
+audioop-lts==0.2.2
+pydub==0.25.1
+ddddocr==1.6.1
+nest_asyncio==1.6.0
