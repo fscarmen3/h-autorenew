@@ -1,11 +1,11 @@
 """
-从 HUS_BATCH 环境变量读取账号信息，登录 Telegram 并生成 session string。
+从 BATCH 环境变量读取账号信息，登录 Telegram 并生成 session string。
 
 用法（单次交互式，同一进程内完成，无需分步）:
-  HUS_BATCH='...' python3 setup_tg_session.py
+  BATCH='...' python3 setup_tg_session.py
 然后按提示输入验证码（及两步验证密码）即可。
 
-HUS_BATCH 格式（多个账号用分号分隔）:
+BATCH 格式（多个账号用分号分隔）:
   phone,tg_bot_token,tg_chat_id,tg_api_id,tg_api_hash,tg_session
   tg_session 留空则自动生成并输出完整行
 """
@@ -20,10 +20,10 @@ except ImportError:
 
 
 def parse_batch():
-    """解析 HUS_BATCH，返回第一个账号的字段"""
-    raw = os.environ.get("HUS_BATCH", "").strip()
+    """解析 BATCH，返回第一个账号的字段"""
+    raw = os.environ.get("BATCH", "").strip()
     if not raw:
-        print("[ERROR] 缺少环境变量 HUS_BATCH")
+        print("[ERROR] 缺少环境变量 BATCH")
         print("[INFO] 格式: phone,tg_bot_token,tg_chat_id,tg_api_id,tg_api_hash,tg_session")
         sys.exit(1)
 
@@ -47,7 +47,7 @@ def parse_batch():
             "raw_parts": parts,
         }
 
-    print("[ERROR] HUS_BATCH 中无有效账号")
+    print("[ERROR] BATCH 中无有效账号")
     sys.exit(1)
 
 
@@ -68,7 +68,7 @@ async def main():
     tg_session = acc["tg_session"]
 
     if not api_id or not api_hash:
-        print("[ERROR] HUS_BATCH 中缺少 tg_api_id 或 tg_api_hash（第4、5字段）")
+        print("[ERROR] BATCH 中缺少 tg_api_id 或 tg_api_hash（第4、5字段）")
         sys.exit(1)
 
     # 统一手机号格式为 +国码-号码
@@ -95,9 +95,9 @@ async def main():
                 await client.disconnect()
                 # 输出原始行（session 不变）
                 print(f"\n{'='*50}")
-                print("[INFO] 当前 HUS_BATCH 行（session 有效，无需更新）:")
+                print("[INFO] 当前 BATCH 行（session 有效，无需更新）:")
                 print(f"{'='*50}")
-                print(f"HUS_BATCH='{format_output_line(acc['raw_parts'], tg_session)}'")
+                print(f"BATCH='{format_output_line(acc['raw_parts'], tg_session)}'")
                 print(f"{'='*50}")
                 return
             await client.disconnect()
@@ -142,12 +142,12 @@ async def _output_session(acc, session_str, client):
     me = await client.get_me()
     print(f"[INFO] ✅ Telegram 登录成功: {me.first_name} (@{me.username or 'N/A'}) phone={me.phone}")
 
-    # 输出完整 HUS_BATCH 行
+    # 输出完整 BATCH 行
     output_line = format_output_line(acc["raw_parts"], session_str)
     print(f"\n{'='*50}")
-    print("[INFO] 复制以下内容替换 HUS_BATCH 中对应的行（第6字段为 session）:")
+    print("[INFO] 复制以下内容替换 BATCH 中对应的行（第6字段为 session）:")
     print(f"{'='*50}")
-    print(f"HUS_BATCH='{output_line}'")
+    print(f"BATCH='{output_line}'")
     print(f"{'='*50}")
 
     await client.disconnect()

@@ -1,8 +1,8 @@
-name: 🔄 Hus Auto Renew
+name: ♻️ Woiden Auto Renew
 
 on:
   schedule:
-    - cron: '8 */12 * * *'
+    - cron: '32 */8 * * *'
   workflow_dispatch:
 
 permissions:
@@ -14,18 +14,18 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 60
     concurrency:
-      group: Hus_Renew
+      group: Woiden_Renew
       cancel-in-progress: false
     env:
       # ════════════════════════════════════════════════════════════════
-      # Secrets（在仓库 → Settings → Secrets 中配置）
+      # Secrets（在仓库 → Settings → Secrets 中配置，与 hax 复用同一批）
       # ════════════════════════════════════════════════════════════════
-      # hus.co.id 账号，多个用分号分隔：
+      # woiden.id 账号，多个用分号分隔：
       #   phone,tg_bot_token,tg_chat_id,tg_api_id,tg_api_hash,tg_session
-      #   TG 凭据（后三个字段）由每账号独立提供
-      HUS_BATCH: ${{ secrets.HUS_BATCH }}
-      # 代理
-      PROXY_CONTENT: ${{ secrets.HUS_HY2_PROXY_URL }}
+      #   与 hax 同一批账号，复用 BATCH secret
+      BATCH: ${{ secrets.BATCH }}
+      # 代理（与 hax 复用同一个）
+      PROXY_CONTENT: ${{ secrets.PROXY_URL }}
       SOCKS_PORT: ${{ secrets.SOCKS_PORT || '10808' }}
       # 可选
       SCREENSHOT_DIR: screenshots
@@ -33,10 +33,10 @@ jobs:
       # 续期重试次数（外层）
       MAX_RENEW_RETRIES: "0"
       # IP 被封时切换 WARP 重试次数（内层）
-      # 所以一共会重试 3*5=15 次
       MAX_WARP_RETRIES: "10"
       # 登录重试次数
       MAX_LOGIN_RETRIES: "1"
+      # 脚本（woiden-renew.py）与工作流同仓库，已由首个 checkout 检出到根目录。
 
     steps:
       - name: 检出仓库
@@ -45,25 +45,25 @@ jobs:
       - name: 创建输出目录
         run: mkdir -p ${{ env.SCREENSHOT_DIR }}
 
-      - name: 校验 HUS_BATCH
+      - name: 校验 BATCH
         env:
-          HUS_BATCH: ${{ secrets.HUS_BATCH }}
+          BATCH: ${{ secrets.BATCH }}
         run: |
           python3 - <<'PY'
           import os, sys
-          value = os.environ.get("HUS_BATCH", "").strip()
+          value = os.environ.get("BATCH", "").strip()
           if not value:
-              raise SystemExit("HUS_BATCH 未设置或为空")
+              raise SystemExit("BATCH 未设置或为空")
           accounts = [x.strip() for x in value.replace("\\n", ";").split(";") if x.strip()]
           if not accounts:
-              raise SystemExit("HUS_BATCH 没有有效账号")
+              raise SystemExit("BATCH 没有有效账号")
           for index, account in enumerate(accounts, 1):
               fields = [x.strip() for x in account.split(",")]
               if len(fields) < 6:
-                  raise SystemExit(f"HUS_BATCH 第 {index} 个账号字段不足：需要 phone,bot_token,chat_id,api_id,api_hash,session")
+                  raise SystemExit(f"BATCH 第 {index} 个账号字段不足：需要 phone,bot_token,chat_id,api_id,api_hash,session")
               if any(not fields[i] for i in range(6)):
-                  raise SystemExit(f"HUS_BATCH 第 {index} 个账号存在空字段")
-          print(f"HUS_BATCH 预检通过：{len(accounts)} 个账号，凭据内容已隐藏")
+                  raise SystemExit(f"BATCH 第 {index} 个账号存在空字段")
+          print(f"BATCH 预检通过：{len(accounts)} 个账号，凭据内容已隐藏")
           PY
 
       - name: 设置 Python
@@ -76,14 +76,14 @@ jobs:
       - name: 缓存 Chromium apt 包
         uses: actions/cache@v6
         with:
-          path: ~/.cache/hus-apt/*.deb
+          path: ~/.cache/woiden-apt/*.deb
           key: apt-chromium-${{ runner.os }}-${{ runner.arch }}-v1
 
       - name: 安装依赖
         run: |
-          mkdir -p "$HOME/.cache/hus-apt/partial"
+          mkdir -p "$HOME/.cache/woiden-apt/partial"
           sudo apt-get update
-          sudo apt-get -o Dir::Cache::archives="$HOME/.cache/hus-apt" \
+          sudo apt-get -o Dir::Cache::archives="$HOME/.cache/woiden-apt" \
             install -y xvfb chromium ffmpeg unzip curl wget jq ca-certificates
           pip install --upgrade pip
           pip install -r requirements.txt -q
@@ -120,7 +120,7 @@ jobs:
       - name: 执行续期
         run: |
           set -o pipefail
-          python3 -u hus-renew.py 2>&1 | tee hus-renew.log &
+          python3 -u woiden-renew.py 2>&1 | tee woiden-renew.log &
           renew_pid=$!
           while kill -0 "$renew_pid" 2>/dev/null; do
             echo "[HEARTBEAT] 执行续期仍在运行: $(date -u +'%Y-%m-%dT%H:%M:%SZ')"
@@ -132,7 +132,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: hus-screenshots-${{ github.run_id }}
+          name: woiden-screenshots-${{ github.run_id }}
           path: ${{ env.SCREENSHOT_DIR }}
           retention-days: 7
           if-no-files-found: warn
@@ -141,8 +141,8 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: hus-renew-log-${{ github.run_id }}
-          path: hus-renew.log
+          name: woiden-renew-log-${{ github.run_id }}
+          path: woiden-renew.log
           retention-days: 7
           if-no-files-found: warn
 
@@ -162,15 +162,14 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # time.txt 可能被并发的 schedule/手动 run 同时更新。
-          # 每次以最新 origin/main 为基准重建提交，避免 pull --rebase 产生内容冲突。
+          # woiden-time.txt 独立于 hax 的 hax-time.txt，避免两个 workflow 并发写同一文件冲突。
           for attempt in 1 2 3; do
             echo "提交执行时间，第 ${attempt}/3 次尝试"
             git fetch origin refs/heads/main:refs/remotes/origin/main
             git reset --hard origin/main
-            date +'%Y-%m-%d %H:%M:%S' > time.txt
-            git add time.txt
-            git commit -m "更新时间文件: $(date +'%Y-%m-%d %H:%M:%S')"
+            date +'%Y-%m-%d %H:%M:%S' > woiden-time.txt
+            git add woiden-time.txt
+            git commit -m "更新 Woiden 时间文件: $(date +'%Y-%m-%d %H:%M:%S')"
             if git push origin HEAD:refs/heads/main; then
               echo "执行时间已提交"
               exit 0
@@ -192,7 +191,7 @@ jobs:
           cutoff_epoch=$(date -d '24 hours ago' +%s)
           runs=$(gh run list \
             --repo "$GITHUB_REPOSITORY" \
-            --workflow="hus-renew.yml" \
+            --workflow="woiden-renew.yml" \
             --limit=100 \
             --json databaseId,createdAt,status,conclusion \
             --jq '.[] | [.databaseId, .createdAt, .status, (.conclusion // "")] | @tsv' 2>/dev/null)

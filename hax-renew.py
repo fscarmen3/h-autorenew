@@ -64,7 +64,7 @@ OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
 #     └─ 20轮全是重复IP → 本次提交失败 → 外层整体重跑时再开一轮新的20轮
 # ════════════════════════════════════════════════════════════════════
 # 账号列表："手机号,tg_bot_token,tg_chat_id,tg_api_id,tg_api_hash,tg_session"，多账号用分号分隔
-HUS_BATCH = os.environ.get("HUS_BATCH", "")
+BATCH = os.environ.get("BATCH", "")
 # 登录重试次数（登录页验证码/网络问题导致登录失败时）
 MAX_LOGIN_RETRIES = int(os.environ.get("MAX_LOGIN_RETRIES", "1").strip())
 # 【外层】每个续期 URL 的整体流程重试次数（实际执行 = 该值 + 1 次）
@@ -89,22 +89,22 @@ def _dbg(msg):
 
 CN_TZ = timezone(timedelta(hours=8))
 
-# ── Telegram MTProto API（由 HUS_BATCH 每账号提供，此处为全局默认值）────
+# ── Telegram MTProto API（由 BATCH 每账号提供，此处为全局默认值）────
 TG_API_ID = 0
 TG_API_HASH = ""
 TG_SESSION = ""
-HUS_BOT = "@HaxTG_bot"
-HUS_BOT_ID = 1967189265
+HAX_BOT = "@HaxTG_bot"
+HAX_BOT_ID = 1967189265
 TG_OFFICIAL_ID = 777000
 
-HUS_BASE_URL = "https://hax.co.id"
-HUS_TITLE = "hax.co.id"
-HUS_LOGIN_URL = f"{HUS_BASE_URL}/login"
-HUS_VPS_INFO_URL = f"{HUS_BASE_URL}/vps-info"
-HUS_VPS_RENEW_URL = f"{HUS_BASE_URL}/vps-renew"
-HUS_VPS_RENEW_CODE_URL = f"{HUS_BASE_URL}/vps-renew-code"
-HUS_VPS_STATUS_URL = f"{HUS_BASE_URL}/vps-status"
-HUS_VPS_CONTROL_URL = f"{HUS_BASE_URL}/vps-control"
+HAX_BASE_URL = "https://hax.co.id"
+HAX_TITLE = "hax.co.id"
+HAX_LOGIN_URL = f"{HAX_BASE_URL}/login"
+HAX_VPS_INFO_URL = f"{HAX_BASE_URL}/vps-info"
+HAX_VPS_RENEW_URL = f"{HAX_BASE_URL}/vps-renew"
+HAX_VPS_RENEW_CODE_URL = f"{HAX_BASE_URL}/vps-renew-code"
+HAX_VPS_STATUS_URL = f"{HAX_BASE_URL}/vps-status"
+HAX_VPS_CONTROL_URL = f"{HAX_BASE_URL}/vps-control"
 
 def cn_now() -> datetime:
     return datetime.now(CN_TZ)
@@ -218,7 +218,7 @@ class TGVerificationCodeExtractor:
     async def fetch_history(self, target: str, limit: int = 100) -> List[Dict[str, str]]:
         """
         一次性提取目标对话最近 N 条消息中的验证码。
-        target: 机器人用户名如 '@HusTG_bot' 或联系人 ID
+        target: 机器人用户名如 '@HaxTG_bot' 或联系人 ID
         返回: [{"code": "123456", "message": "...", "time": "..."}]
         """
         session_str = self._load_session()
@@ -914,9 +914,9 @@ class ArithmeticCaptchaSolver(CaptchaSolver):
         if not src:
             return None
         if src.startswith("/"):
-            src = HUS_BASE_URL + src
+            src = HAX_BASE_URL + src
         elif not src.startswith("http"):
-            src = HUS_BASE_URL + "/" + src
+            src = HAX_BASE_URL + "/" + src
         _dbg(f"captcha img src: {src[:120]}")
 
         # 方式1: 同步 XHR 直接下载图片二进制数据
@@ -983,7 +983,7 @@ class ArithmeticCaptchaSolver(CaptchaSolver):
         try:
             proxies = {"http": self._proxy, "https": self._proxy} if self._proxy else None
             r = requests.get(src, proxies=proxies, timeout=15,
-                             headers={"Referer": HUS_BASE_URL + "/",
+                             headers={"Referer": HAX_BASE_URL + "/",
                                       "User-Agent": "Mozilla/5.0"})
             if r.status_code == 200 and self._valid_captcha_image(r.content):
                 _dbg(f"requests 下载成功: {len(r.content)} bytes")
@@ -1406,7 +1406,7 @@ def notify(result: dict, username: str, tg_token: str = None, tg_chat: str = Non
         # 再发文字报告
         if result.get("success"):
             text = (
-                f"<b>🎮 {HUS_TITLE} 续期报告</b>\n"
+                f"<b>🎮 {HAX_TITLE} 续期报告</b>\n"
                 f"{header}"
                 f"✅ 续期成功\n"
                 f"🖥️ 服务器: {hostname}\n"
@@ -1427,7 +1427,7 @@ def notify(result: dict, username: str, tg_token: str = None, tg_chat: str = Non
             text += f"\n🔥 重试次数: {retries}\n🌐 ip更换次数: {swaps}\n⚡ warp刷新次数: {refresh}\n"
         else:
             text = (
-                f"<b>🎮 {HUS_TITLE} 续期报告</b>\n"
+                f"<b>🎮 {HAX_TITLE} 续期报告</b>\n"
                 f"{header}"
                 f"❌ 续期失败\n"
                 f"🖥️ 服务器: {hostname}\n"
@@ -1469,7 +1469,7 @@ def notify_login_fail(username: str, img: str = None, tg_token: str = None, tg_c
         masked_phone = phone_mask or mask(username)
         header = _tg_header(masked_phone, chat, ip_info)
         text = (
-                f"<b>🎮 {HUS_TITLE} 续期报告</b>\n"
+                f"<b>🎮 {HAX_TITLE} 续期报告</b>\n"
                 f"{header}"
 
             f"❌ 登录失败\n"
@@ -1545,7 +1545,7 @@ def check_turnstile_done(browser) -> bool:
         return False
 
 
-def hus_handle_turnstile(browser, idx: int) -> bool:
+def hax_handle_turnstile(browser, idx: int) -> bool:
     """处理 页面上的 Turnstile"""
     print("  [INFO] 处理 Turnstile...")
     time.sleep(2)
@@ -1620,7 +1620,7 @@ def handle_recaptcha_fallback(browser, idx: int) -> bool:
         return False
 
 
-def hus_click_accept(browser, idx: int) -> bool:
+def hax_click_accept(browser, idx: int) -> bool:
     """点击网页中的 Accept 按钮（confirmRequest）"""
     print("  [INFO] 点击 Accept...")
     time.sleep(3)
@@ -1656,14 +1656,14 @@ def hus_click_accept(browser, idx: int) -> bool:
             time.sleep(0.5)
         except Exception:
             pass
-        safe_screenshot(browser, shot(idx, "hus_login_after_accept"))
+        safe_screenshot(browser, shot(idx, "hax_login_after_accept"))
         return True
     except Exception as e:
         print(f"  [WARN] Accept 点击异常: {e}")
         return False
 
 
-def hus_login_flow(browser, phone: str, idx: int, proxy: str = None) -> bool:
+def hax_login_flow(browser, phone: str, idx: int, proxy: str = None) -> bool:
     """
     登录流程（Telegram Widget），支持重试。
 
@@ -1705,11 +1705,11 @@ def hus_login_flow(browser, phone: str, idx: int, proxy: str = None) -> bool:
             print(f"{'─'*40}")
 
         print(f"\n{'─'*40}")
-        print(f"  [INFO] hus 登录流程")
+        print(f"  [INFO] hax 登录流程")
         print(f"{'─'*40}")
         print(f"  [INFO] 国家代码: +{country_code}, 手机号: {mask_phone(raw)}")
 
-        ok = _hus_login_flow_inner(browser, country_code, phone_num, raw, idx, proxy)
+        ok = _hax_login_flow_inner(browser, country_code, phone_num, raw, idx, proxy)
         if ok:
             return True
         if login_attempt < MAX_LOGIN_RETRIES:
@@ -1721,10 +1721,10 @@ def hus_login_flow(browser, phone: str, idx: int, proxy: str = None) -> bool:
     return False
 
 
-def _hus_login_flow_inner(browser, country_code: str, phone_num: str, raw: str,
+def _hax_login_flow_inner(browser, country_code: str, phone_num: str, raw: str,
                           idx: int, proxy: str = None) -> bool:
     """
-    hus 登录流程内部实现（单次尝试，不含重试）。
+    hax 登录流程内部实现（单次尝试，不含重试）。
 
     Args:
         browser: DrissionPage 浏览器实例
@@ -1735,11 +1735,11 @@ def _hus_login_flow_inner(browser, country_code: str, phone_num: str, raw: str,
         proxy: SOCKS5 代理地址
 
     Returns:
-        True 登录成功，False 登录失败（由外层 hus_login_flow 决定是否重试）
+        True 登录成功，False 登录失败（由外层 hax_login_flow 决定是否重试）
     """
     # 1. 绕过 Cloudflare
     print("  [INFO] 访问 登录页...")
-    browser.open(HUS_LOGIN_URL)
+    browser.open(HAX_LOGIN_URL)
     time.sleep(5)
 
     cf_passed = False
@@ -1779,7 +1779,7 @@ def _hus_login_flow_inner(browser, country_code: str, phone_num: str, raw: str,
         time.sleep(0.5)
     except Exception:
         pass
-    safe_screenshot(browser, shot(idx, "hus_login_page"))
+    safe_screenshot(browser, shot(idx, "hax_login_page"))
 
     # 2. 等待 Telegram Widget iframe 加载（最多18秒）
     print("  [INFO] 查找 Telegram Widget iframe...")
@@ -1810,7 +1810,7 @@ def _hus_login_flow_inner(browser, country_code: str, phone_num: str, raw: str,
 
     if not iframe_found:
         print("  [ERROR] 未找到 Telegram Widget iframe")
-        safe_screenshot(browser, shot(idx, "hus_login_no_iframe"))
+        safe_screenshot(browser, shot(idx, "hax_login_no_iframe"))
         return False
 
     print("  [INFO] 进入 Telegram Widget iframe...")
@@ -1820,7 +1820,7 @@ def _hus_login_flow_inner(browser, country_code: str, phone_num: str, raw: str,
         tg_frame = None
     if not tg_frame:
         print("  [ERROR] Telegram Widget iframe 获取失败")
-        safe_screenshot(browser, shot(idx, "hus_login_no_iframe"))
+        safe_screenshot(browser, shot(idx, "hax_login_no_iframe"))
         return False
 
     print("  [INFO] 使用 DrissionPage 原生元素点击 Log in with Telegram...")
@@ -1856,7 +1856,7 @@ def _hus_login_flow_inner(browser, country_code: str, phone_num: str, raw: str,
 
     if not popup_tab:
         print("  [ERROR] Telegram 点击后没有创建 OAuth 标签页")
-        safe_screenshot(browser, shot(idx, "hus_login_no_tg_btn"))
+        safe_screenshot(browser, shot(idx, "hax_login_no_tg_btn"))
         return False
 
     popup_handle = popup_tab.tab_id
@@ -1879,7 +1879,7 @@ def _hus_login_flow_inner(browser, country_code: str, phone_num: str, raw: str,
         time.sleep(0.5)
     except Exception:
         pass
-    safe_screenshot(browser, shot(idx, "hus_login_after_iframe_click"))
+    safe_screenshot(browser, shot(idx, "hax_login_after_iframe_click"))
 
     # 3. for_new_tab() 已捕获 OAuth 标签页；确认 URL 后继续填写手机号。
     popup_url = browser.get_current_url()
@@ -1887,7 +1887,7 @@ def _hus_login_flow_inner(browser, country_code: str, phone_num: str, raw: str,
         print(f"  [WARN] 新标签页 URL 非 Telegram OAuth: {popup_url[:120]}")
     else:
         print(f"  [INFO] OAuth 标签页已确认: {popup_url}")
-    safe_screenshot(browser, shot(idx, "hus_login_popup"))
+    safe_screenshot(browser, shot(idx, "hax_login_popup"))
 
     # 4. OAuth 页面异步渲染完成后，用 DrissionPage 原生元素填写手机号
     print("  [INFO] 填写手机号...")
@@ -1895,7 +1895,7 @@ def _hus_login_flow_inner(browser, country_code: str, phone_num: str, raw: str,
     phone_el = browser.active.ele('#login-phone', timeout=15)
     if not phone_code_el or not phone_el:
         print("  [ERROR] OAuth 页面手机号输入框未加载")
-        safe_screenshot(browser, shot(idx, "hus_login_no_phone_code"))
+        safe_screenshot(browser, shot(idx, "hax_login_no_phone_code"))
         return False
 
     target_code = f'+{country_code}'
@@ -1910,13 +1910,13 @@ def _hus_login_flow_inner(browser, country_code: str, phone_num: str, raw: str,
     current_code = phone_code_el.property('value') or phone_code_el.attr('value') or ''
     if current_code != target_code:
         print(f"  [ERROR] 国家码输入未生效: 当前 {current_code or '未知'}，目标 {target_code}")
-        safe_screenshot(browser, shot(idx, "hus_login_wrong_country"))
+        safe_screenshot(browser, shot(idx, "hax_login_wrong_country"))
         return False
 
     print(f"  [INFO] 输入手机号: {mask_phone(phone_num)}")
     phone_el.input(phone_num, clear=True)
     time.sleep(1)
-    safe_screenshot(browser, shot(idx, "hus_login_phone_filled"))
+    safe_screenshot(browser, shot(idx, "hax_login_phone_filled"))
 
     # 5. 使用 DrissionPage 原生点击 Continue
     print("  [INFO] 点击 Continue...")
@@ -1926,7 +1926,7 @@ def _hus_login_flow_inner(browser, country_code: str, phone_num: str, raw: str,
         return False
     continue_btn.click()
     time.sleep(5)
-    safe_screenshot(browser, shot(idx, "hus_login_after_continue"))
+    safe_screenshot(browser, shot(idx, "hax_login_after_continue"))
 
     # 检查是否出现 "We've just sent you a message"
     page_text = browser.execute_script('return document.body ? document.body.innerText : ""') or ""
@@ -1986,7 +1986,7 @@ def _hus_login_flow_inner(browser, country_code: str, phone_num: str, raw: str,
                 break
             if has_accept:
                 print(f"  [INFO] Accept 按钮已出现 ({wait*2}s)")
-                hus_click_accept(browser, idx)
+                hax_click_accept(browser, idx)
                 accept_clicked = True
                 break
             if wait % 5 == 0 and wait > 0:
@@ -2015,7 +2015,7 @@ def _hus_login_flow_inner(browser, country_code: str, phone_num: str, raw: str,
         time.sleep(0.5)
     except Exception:
         pass
-    safe_screenshot(browser, shot(idx, "hus_login_after_accept"))
+    safe_screenshot(browser, shot(idx, "hax_login_after_accept"))
 
     # 验证登录成功
     print("  [INFO] 验证登录成功...")
@@ -2045,15 +2045,15 @@ def _hus_login_flow_inner(browser, country_code: str, phone_num: str, raw: str,
         return True
 
     print("  [WARN] 登录状态不确定，请检查截图")
-    safe_screenshot(browser, shot(idx, "hus_login_uncertain"))
+    safe_screenshot(browser, shot(idx, "hax_login_uncertain"))
     return False
 
 
-def hus_get_vps_info(browser, idx: int) -> Tuple[List[Dict[str, str]], str, Optional[str]]:
+def hax_get_vps_info(browser, idx: int) -> Tuple[List[Dict[str, str]], str, Optional[str]]:
     """访问 /vps-info/，解析服务器列表"""
     servers, seen = [], set()
 
-    browser.open(HUS_VPS_INFO_URL)
+    browser.open(HAX_VPS_INFO_URL)
     time.sleep(5)
 
     # Cloudflare 绕过
@@ -2212,7 +2212,7 @@ def _submit_code_page(browser, code: str, idx: int, sid_f: str, proxy: str = Non
                         if restart_warp(proxy) and handoff_browser_to_warp(browser):
                             time.sleep(5)
                         # 刷新 vps-renew-code 页面，复用 TG 验证码
-                        browser.open(HUS_VPS_RENEW_CODE_URL)
+                        browser.open(HAX_VPS_RENEW_CODE_URL)
                         time.sleep(5)
                         # Cloudflare 绕过
                         for cf_attempt in range(6):
@@ -2244,7 +2244,7 @@ def _submit_code_page(browser, code: str, idx: int, sid_f: str, proxy: str = Non
                         print("  [INFO] 重启 WARP 换 IP，刷新验证码页面重试...")
                         if restart_warp(proxy) and handoff_browser_to_warp(browser):
                             time.sleep(5)
-                        browser.open(HUS_VPS_RENEW_CODE_URL)
+                        browser.open(HAX_VPS_RENEW_CODE_URL)
                         time.sleep(5)
                         for cf_attempt in range(6):
                             src = browser.get_page_source()
@@ -2361,7 +2361,7 @@ def _submit_code_page(browser, code: str, idx: int, sid_f: str, proxy: str = Non
 
 def _renew_fill_form(browser, idx: int, sid_f: str) -> None:
     """打开 /vps-renew/ 并填写表单：web_address + agreement + Turnstile + 点击提交"""
-    browser.open(HUS_VPS_RENEW_URL)
+    browser.open(HAX_VPS_RENEW_URL)
     time.sleep(5)
 
     # Cloudflare 绕过
@@ -2427,7 +2427,7 @@ def _renew_fill_form(browser, idx: int, sid_f: str) -> None:
     time.sleep(2)
 
     # 解 Turnstile
-    hus_handle_turnstile(browser, idx)
+    hax_handle_turnstile(browser, idx)
     time.sleep(2)
 
     # 提交（点击 Renew VPS 按钮）
@@ -2458,7 +2458,7 @@ def _renew_start_tg_listener(proxy: str = None, since: datetime = None):
                 # 先查历史记录（bot 可能在我们启动监听前就发了代码）
                 try:
                     extractor = TGVerificationCodeExtractor(proxy=proxy)
-                    history = asyncio.run(extractor.fetch_history(HUS_BOT, limit=20))
+                    history = asyncio.run(extractor.fetch_history(HAX_BOT, limit=20))
                     for h in history:
                         if not h.get("code"):
                             continue
@@ -2481,7 +2481,7 @@ def _renew_start_tg_listener(proxy: str = None, since: datetime = None):
                 except Exception as e:
                     _dbg(f"TG 历史查询: {e}")
                 # 再监听新消息
-                code_holder[0] = tg_wait_for_code_sync(HUS_BOT, timeout=150, proxy=proxy)
+                code_holder[0] = tg_wait_for_code_sync(HAX_BOT, timeout=150, proxy=proxy)
                 if code_holder[0]:
                     print(f"  [INFO] TG 后台捕获验证码: {code_holder[0]}")
             except Exception as e:
@@ -2521,13 +2521,13 @@ def handoff_browser_to_warp(browser, target_url: Optional[str] = None) -> bool:
         new_page = ChromiumPage(co)
         new_page.set.timeouts(page_load=30, script=30)
         block_ad_domains(new_page)
-        new_page.get(HUS_BASE_URL)
+        new_page.get(HAX_BASE_URL)
         new_page.wait.doc_loaded()
         time.sleep(2)
         if cookies:
             new_page.set.cookies(cookies)
             # cookie 注入后重新导航，确保登录态和文档状态稳定。
-            new_page.get(target_url or HUS_BASE_URL)
+            new_page.get(target_url or HAX_BASE_URL)
             new_page.wait.doc_loaded()
             time.sleep(3)
         browser.page = new_page
@@ -2655,7 +2655,7 @@ def _renew_refresh_code_page_after_captcha(browser, idx: int, sid_f: str,
 
     time.sleep(5)
     try:
-        browser.open(HUS_VPS_RENEW_CODE_URL)
+        browser.open(HAX_VPS_RENEW_CODE_URL)
         time.sleep(5)
         for cf_attempt in range(6):
             src = browser.get_page_source()
@@ -2679,7 +2679,7 @@ def _renew_refresh_code_page_after_captcha(browser, idx: int, sid_f: str,
 def _renew_capture_final_info(browser, result: dict, old_valid_until: str) -> None:
     """无论续期成败，最后回到 VPS info 页面并以该页截图/到期日为准。"""
     try:
-        servers, error, screenshot = hus_get_vps_info(browser, result.get("_idx", 0))
+        servers, error, screenshot = hax_get_vps_info(browser, result.get("_idx", 0))
         if screenshot:
             result["screenshot"] = screenshot
             result["vps_info_screenshot"] = screenshot
@@ -2955,7 +2955,7 @@ def renew(browser, server_info: Dict[str, str], idx: int, phone: str,
             print("  [INFO] 已进入最终续期页面，切换为 WARP 直连浏览器...")
             if not restart_warp(proxy):
                 raise CaptchaBlocked("最终续期页面 WARP 切换失败")
-            if not handoff_browser_to_warp(browser, HUS_VPS_RENEW_CODE_URL):
+            if not handoff_browser_to_warp(browser, HAX_VPS_RENEW_CODE_URL):
                 raise CaptchaBlocked("最终续期页面 WARP 直连浏览器重建失败")
 
             # 新浏览器重新打开页面后，验证码图片和 Turnstile 都是新的，不能复用旧页面状态。
@@ -3047,7 +3047,7 @@ def renew(browser, server_info: Dict[str, str], idx: int, phone: str,
 
 def logout(browser):
     try:
-        browser.open(f"{HUS_BASE_URL}/logout")
+        browser.open(f"{HAX_BASE_URL}/logout")
         time.sleep(3)
     except Exception:
         pass
@@ -3058,7 +3058,7 @@ def process(browser, phone: str, idx: int, tg_token: str = None, tg_chat: str = 
               "success": False, "message": "", "servers": []}
 
     # 1. 登录（手机号 + TG 验证码）
-    login_ok = hus_login_flow(browser, phone, idx, proxy=proxy)
+    login_ok = hax_login_flow(browser, phone, idx, proxy=proxy)
     if not login_ok:
         result["message"] = "登录失败"
         notify_login_fail(phone, tg_token=tg_token, tg_chat=tg_chat, ip_info=ip_info,
@@ -3066,7 +3066,7 @@ def process(browser, phone: str, idx: int, tg_token: str = None, tg_chat: str = 
         return result
 
     # 2. 查询 VPS 信息
-    servers, error, dash_shot = hus_get_vps_info(browser, idx)
+    servers, error, dash_shot = hax_get_vps_info(browser, idx)
     if error and not servers:
         result["message"] = error
         notify_login_fail(phone, dash_shot, tg_token=tg_token, tg_chat=tg_chat, ip_info=ip_info,
@@ -3340,7 +3340,7 @@ def _send_tg_report(results, masked_phone, tg_token, tg_chat, ip_info):
     print(f"   ❌ 续期失败: {failed_count}")
 
     summary = f"\n" + "-" * 40 + "\n"
-    summary += f"<b>📊 {HUS_TITLE} 续期统计</b>\n"
+    summary += f"<b>📊 {HAX_TITLE} 续期统计</b>\n"
     summary += _tg_header(masked_phone, tg_chat, ip_info)
     summary += f"🖥️ 总服务器数: {total_servers}\n"
     summary += f"✅ 续期成功: {success_count}\n"
@@ -3355,24 +3355,24 @@ def _send_tg_report(results, masked_phone, tg_token, tg_chat, ip_info):
 def main():
     # ── 正常续期流程 ─────────────────────────────────────────────────
     # 校验必填环境变量
-    if not HUS_BATCH:
-        print("[ERROR] 缺少必填环境变量: HUS_BATCH")
+    if not BATCH:
+        print("[ERROR] 缺少必填环境变量: BATCH")
         sys.exit(1)
 
-    acc_str = HUS_BATCH
+    acc_str = BATCH
     accounts = parse_accounts(acc_str)
     if not accounts:
-        print("[ERROR] HUS_BATCH中无有效账号"); sys.exit(1)
+        print("[ERROR] BATCH中无有效账号"); sys.exit(1)
 
     # 检查 TG 凭据：全局或每账号至少有一套
     has_global_tg = bool(TG_SESSION and TG_API_HASH)
     for acc in accounts:
         if not has_global_tg and not (acc.get("tg_api_hash") and acc.get("tg_session")):
-            print(f"[ERROR] 账号 {acc['phone']} 缺少 TG 凭据（需全局 TG_SESSION/TG_API_HASH 或 HUS_BATCH 中包含）")
+            print(f"[ERROR] 账号 {acc['phone']} 缺少 TG 凭据（需全局 TG_SESSION/TG_API_HASH 或 BATCH 中包含）")
             sys.exit(1)
 
     print("=" * 40)
-    print("  Hus Auto Renew")
+    print("  Hax Auto Renew")
     print("=" * 40)
 
     proxy = ""
@@ -3504,7 +3504,7 @@ def main():
             print(f"  {s_status} {s.get('server_name', 'Unknown')}: {s.get('message', '')}")
     print(f"{'='*40}")
 
-    # 发送 TG 汇总报告：仅当 HUS_BATCH 含多个账号时才发送；
+    # 发送 TG 汇总报告：仅当 BATCH 含多个账号时才发送；
     # 单账号由单台续期报告覆盖，这里只补打验证码求解统计到控制台。
     if len(accounts) > 1:
         acc_tg_map = {acc["phone"]: (acc.get("tg_token"), acc.get("tg_chat")) for acc in accounts}

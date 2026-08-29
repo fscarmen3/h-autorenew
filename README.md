@@ -1,10 +1,10 @@
-# Auto Hus
+# Auto Hax
 
-自动续期 hus VPS 订阅的工具，通过浏览器自动化完成登录、验证、续期全流程，并支持 Telegram 通知。
+自动续期 hax VPS 订阅的工具，通过浏览器自动化完成登录、验证、续期全流程，并支持 Telegram 通知。
 
 ## 工作原理
 
-1. 使用 DrissionPage ChromiumPage 打开 hus.co.id 面板
+1. 使用 DrissionPage ChromiumPage 打开 hax.co.id 面板
 2. 通过 Telegram Widget 实现登录（Telethon 点击 Confirm 授权）
 3. 自动处理 Cloudflare Turnstile 挑战
 4. 枚举账户下所有 VPS，逐一执行续期
@@ -32,9 +32,9 @@ pip install -r requirements.txt
 
 ### 配置
 
-通过 `HUS_BATCH` 环境变量配置，多个账号用分号 `;` 分隔。
+通过 `BATCH` 环境变量配置，多个账号用分号 `;` 分隔。
 
-#### HUS_BATCH 格式
+#### BATCH 格式
 
 ```
 phone,tg_bot_token,tg_chat_id,tg_api_id,tg_api_hash,tg_session
@@ -65,7 +65,7 @@ phone,tg_bot_token,tg_chat_id,tg_api_id,tg_api_hash,tg_session
 
 | 变量 | 必填 | 默认值 | 说明 |
 |---|---|---|---|
-| `HUS_HY2_PROXY_URL` | ❌ | - | 代理 URL（支持 vless/vmess/trojan/ss/hy2/tuic/anytls/socks5） |
+| `PROXY_URL` | ❌ | - | 代理 URL（支持 vless/vmess/trojan/ss/hy2/tuic/anytls/socks5） |
 | `SOCKS_PORT` | ❌ | `10808` | 本地 SOCKS 代理端口 |
 | `SCREENSHOT_DIR` | ❌ | `output/screenshots` | 截图保存目录 |
 | `DEBUG_FLAG` | ❌ | `0` | 设为 `1` 输出调试日志 |
@@ -74,7 +74,7 @@ phone,tg_bot_token,tg_chat_id,tg_api_id,tg_api_hash,tg_session
 
 1. 访问 https://my.telegram.org ，用你的手机号登录（会收到 Telegram 验证码）
 2. 点击 **API development tools**
-3. 填写表单（App title / Short name 随便填，如 `husauto`）
+3. 填写表单（App title / Short name 随便填，如 `haxauto`）
 4. 提交后页面显示 **App api_id** 和 **App api_hash**
 
 > ⚠️ api_id 和 api_hash 是固定的，创建一次后不要重复创建，否则旧的会失效。
@@ -87,24 +87,24 @@ phone,tg_bot_token,tg_chat_id,tg_api_id,tg_api_hash,tg_session
 
 ```bash
 # 第一步：发送验证码
-HUS_BATCH='+506-60012545,7126463574:AAH...,453472000,34604900,96c51d9e7a31...,' \
+BATCH='+506-60012545,7126463574:AAH...,453472000,34604900,96c51d9e7a31...,' \
   python3 setup_tg_session.py
 
 # 第二步：带验证码登录（2分钟内执行）
-HUS_BATCH='+506-60012545,7126463574:AAH...,453472000,96c51d9e7a31...,,' \
+BATCH='+506-60012545,7126463574:AAH...,453472000,96c51d9e7a31...,,' \
   python3 setup_tg_session.py <验证码>
 
 # 有两步验证时
-HUS_BATCH='...' python3 setup_tg_session.py <验证码> <密码>
+BATCH='...' python3 setup_tg_session.py <验证码> <密码>
 ```
 
 ### 输出
 
-脚本会输出完整的 HUS_BATCH 行（第 6 字段已填入生成的 session），直接复制替换即可：
+脚本会输出完整的 BATCH 行（第 6 字段已填入生成的 session），直接复制替换即可：
 
 ```
 ==================================================
-复制以下内容替换 HUS_BATCH 中对应的行:
+复制以下内容替换 BATCH 中对应的行:
 ==================================================
 +506-63532545,7126463574:AAH...,453472010,34604959,96c51d9e7a31...,1AZWar...
 ==================================================
@@ -116,7 +116,8 @@ HUS_BATCH='...' python3 setup_tg_session.py <验证码> <密码>
 
 | 工作流 | 文件 | 用途 |
 |---|---|---|
-| Hus Auto Renew | `.github/workflows/hus-renew.yml` | 自动续期，每 12 小时执行一次 |
+| Hax Auto Renew | `.github/workflows/hax-renew.yml` | hax.co.id 自动续期，每 12 小时执行一次 |
+| Woiden Auto Renew | `.github/workflows/woiden-renew.yml` | woiden.id 自动续期，每 12 小时执行一次（与 hax 错开 6 小时） |
 
 ### 配置 Secrets
 
@@ -124,8 +125,8 @@ HUS_BATCH='...' python3 setup_tg_session.py <验证码> <密码>
 
 | Secret 名称 | 必填 | 说明 |
 |---|---|---|
-| `HUS_BATCH` | 是 | 账号列表，格式：`phone,tg_bot_token,tg_chat_id,tg_api_id,tg_api_hash,tg_session` |
-| `HUS_HY2_PROXY_URL` | 否 | 代理 URL（sing-box 模式） |
+| `BATCH` | 是 | 账号列表，格式：`phone,tg_bot_token,tg_chat_id,tg_api_id,tg_api_hash,tg_session` |
+| `PROXY_URL` | 否 | 代理 URL（sing-box 模式） |
 | `SOCKS_PORT` | 否 | SOCKS 端口（默认 10808） |
 
 ### 工作流行为
@@ -137,7 +138,7 @@ HUS_BATCH='...' python3 setup_tg_session.py <验证码> <密码>
 
 ## 代理配置
 
-通过 `HUS_HY2_PROXY_URL` 传入代理 URL，由 `gen_singbox_config.py` 自动转换为 sing-box 配置：
+通过 `PROXY_URL` 传入代理 URL，由 `gen_singbox_config.py` 自动转换为 sing-box 配置：
 
 | 协议 | 传输层 | TLS 选项 |
 |---|---|---|
@@ -155,8 +156,10 @@ HUS_BATCH='...' python3 setup_tg_session.py <验证码> <密码>
 ```
 .
 ├── .github/workflows/
-│   └── hus-renew.yml             # 自动续期工作流
-├── hus-renew.py                  # 主程序：登录、续期、验证码、通知
+│   ├── hax-renew.yml             # hax.co.id 自动续期工作流
+│   └── woiden-renew.yml          # woiden.id 自动续期工作流
+├── hax-renew.py                  # hax.co.id 主程序：登录、续期、验证码、通知
+├── woiden-renew.py               # woiden.id 主程序：登录、续期、验证码、通知（与 hax 同面板，仅域名不同）
 ├── setup_tg_session.py           # TG Session 生成脚本
 ├── gen_singbox_config.py         # 代理 URL 解析与 sing-box 配置生成
 └── README.md
@@ -169,5 +172,5 @@ HUS_BATCH='...' python3 setup_tg_session.py <验证码> <密码>
 - Cloudflare 绕过依赖 DrissionPage ChromiumPage 的 iframe 点击模式
 - reCAPTCHA 解决依赖语音识别（speech_recognition + ffmpeg），部分 IP 可能被 Google 限制
 - 算术验证码通过 ddddocr OCR 识别，成功率较高
-- Telegram 验证码通过 Telethon 后台线程从 @HusTG_bot 实时提取
+- Telegram 验证码通过 Telethon 后台线程从 @HaxTG_bot 实时提取
 - 每个 TG 账号的 API 凭据独立，互不影响
