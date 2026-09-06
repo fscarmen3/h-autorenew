@@ -4,7 +4,7 @@
 import os, sys, time, platform, requests, re, json, subprocess, socket, threading
 os.environ["PATH"] = os.path.expanduser("~/bin") + os.pathsep + os.environ.get("PATH", "")
 import tempfile, html as html_mod, random
-from datetime import datetime, timezone, timedelta
+from datetime import datetime, timezone, timedelta, date
 from pathlib import Path
 from typing import Dict, Any, List, Tuple, Optional
 from DrissionPage import ChromiumPage, ChromiumOptions
@@ -80,6 +80,9 @@ MAX_WARP_ROTATE_ATTEMPTS = int(os.environ.get("MAX_WARP_ROTATE_ATTEMPTS", "20").
 # 单条 warp-cli 命令的超时秒数（正常执行 1-2s；超时说明网络已断/挂起，
 # 会强杀整个进程组防止孤儿 warp-cli 卡住管道，然后由轮换循环继续下一轮）
 WARP_CMD_TIMEOUT = int(os.environ.get("WARP_CMD_TIMEOUT", "10").strip())
+# 【到期日门槛】VPS 剩余有效期 ≥ 该天数时跳过续期流程，只提示"有效期充足，
+# 无需续期"。默认 2 天，可通过环境变量 WOIDEN_MIN_VALID_DAYS 调整（hax 保持 5 天）。
+MIN_VALID_DAYS = int(os.environ.get("WOIDEN_MIN_VALID_DAYS", "2").strip())
 
 DEBUG = os.environ.get("DEBUG_FLAG", "0").strip() == "1"
 
@@ -108,6 +111,16 @@ WOIDEN_VPS_CONTROL_URL = f"{WOIDEN_BASE_URL}/vps-control"
 
 def cn_now() -> datetime:
     return datetime.now(CN_TZ)
+
+
+def _parse_iso_date(s: str):
+    """解析 "YYYY-MM-DD" 为 date，失败返回 None。"""
+    if not s:
+        return None
+    try:
+        return datetime.strptime(s, "%Y-%m-%d").date()
+    except Exception:
+        return None
 
 
 # ╔══════════════════════════════════════════════════════════════════════╗
@@ -527,13 +540,27 @@ class DPBrowser:
     def save_screenshot(self,path): return self.active.get_screenshot(path=path)
     def switch_to_frame(self,frame): self.driver.switch_to.frame(frame)
     def click_turnstile(self):
-        """按 DrissionPage 范本点击 Cloudflare Turnstile iframe。"""
+        """点击 Cloudflare Turnstile 复选框。支持多种 iframe 定位方式。"""
         try:
-            iframe = self.active.get_frame(
-                'css:iframe[src*="challenges.cloudflare.com"]', timeout=5
-            )
+            # 尝试多种 Turnstile iframe 选择器
+            iframe = None
+            selectors = [
+                'css:iframe[src*="challenges.cloudflare.com"]',
+                'css:iframe[title*="challenge"]',
+                'css:iframe[src*="cf-chl"]',
+                'css:iframe[src*="turnstile"]',
+            ]
+            for sel in selectors:
+                try:
+                    iframe = self.active.get_frame(sel, timeout=5)
+                    if iframe:
+                        break
+                except Exception:
+                    continue
+
             if not iframe:
-                return True
+                return True  # 无 challenge iframe，视为无需处理
+
             iframe.frame_ele.click.at(offset_x=25, offset_y=25)
             return True
         except Exception as e:
@@ -847,13 +874,14 @@ class ArithmeticCaptchaSolver(CaptchaSolver):
     def _digit_from_url(src: str) -> Optional[int]:
         """从图片 URL 文件名直接解析答案数字。
 
-        HAX 验证码图片命名格式: {md5}-{答案数字}{客户端IP}.jpg
-        例: 7a90e147...267f-3104.28.196.79.jpg → 数字 3，IP 104.28.196.79
+        验证码图片命名格式: {md5}-{答案数字}{客户端IP}.jpg
+        例: ...267f-3104.28.196.79.jpg → 数字 3（IPv4）
+            ...890-22409:8a55:4d64:...:8a70.jpg → 数字 2（IPv6）
         这是服务端生成的，比 OCR 可靠得多。
         """
         if not src:
             return None
-        m = re.search(r'-([0-9])([0-9]{1,3}(?:\.[0-9]{1,3}){3})\.jpg', src)
+        m = re.search(r'-([0-9])(?:[0-9]{1,3}(?:\.[0-9]{1,3}){3}|[0-9a-fA-F:.]{6,})\.jpg', src)
         if m:
             return int(m.group(1))
         return None
@@ -1363,7 +1391,8 @@ def removeAds(browser):
     _dbg(f"[去广告后] {after.get('el',0)} DOM, {after.get('sc',0)} script, {after.get('ifr',0)} iframe")
     print(f"  [INFO] 广告清理效果: {b_total} → {a_total} (减少 {b_total - a_total} 个)")
 
-def _tg_header(masked_phone: str, tg_chat: str = None, ip_info: str = "") -> str:
+def _tg_header(masked_phone: str, tg_chat: str = None, ip_info: str = "",
+               server_id: str = "") -> str:
     now_bj = datetime.now(CN_TZ)
     now_utc = datetime.now(timezone.utc)
     user_id = tg_chat if tg_chat else "0000"
@@ -1371,7 +1400,13 @@ def _tg_header(masked_phone: str, tg_chat: str = None, ip_info: str = "") -> str
     msg += f"🕐 运行时间: {now_utc.strftime('%Y-%m-%d %H:%M:%S')} (UTC)\n"
     if ip_info:
         msg += f"🌐 IP 信息: {ip_info}\n"
-    msg += f"👤 账号: <a href='tg://user?id={user_id}'>{masked_phone}</a>\n\n"
+    if server_id:
+        # 有服务器：只显示服务器数字 ID，不出现任何手机号
+        msg += f"👤 账号: {server_id}\n\n"
+    else:
+        # 无服务器（未开机/失败等）：只显示手机号末 3 位，最大限度脱敏
+        tail = masked_phone[-3:] if masked_phone else "000"
+        msg += f"👤 账号: ***{tail}\n\n"
     return msg
 
 
@@ -1383,8 +1418,10 @@ def notify(result: dict, username: str, tg_token: str = None, tg_chat: str = Non
     if not token or not chat: return
     try:
         masked_phone = result.get("phoneMask", mask(username))
-        header = _tg_header(masked_phone, chat, ip_info)
         hostname = result.get("hostname", "")
+        # 服务器数字 ID = hostname 第一个 "_" 前的数字（如 5137122051_woiden... → 5137122051）
+        server_id = re.sub(r'_.*$', '', hostname) if hostname else ""
+        header = _tg_header(masked_phone, chat, ip_info, server_id=server_id)
         status = result.get("status", "")
         old_valid = result.get("old_valid_until", "")
         new_valid = result.get("new_valid_until", "")
@@ -1405,26 +1442,39 @@ def notify(result: dict, username: str, tg_token: str = None, tg_chat: str = Non
 
         # 再发文字报告
         if result.get("success"):
-            text = (
-                f"<b>🎮 {WOIDEN_TITLE} 续期报告</b>\n"
-                f"{header}"
-                f"✅ 续期成功\n"
-                f"🖥️ 服务器: {hostname}\n"
-                f"📍 位置: {location}\n"
-                f"📊 状态: {status}\n"
-                f"📋 info 页面到期日对比: {expiry_info or '未读取到'}\n"
-            )
-            if old_valid:
-                text += f"📋 横幅提取到期日: {old_valid}"
-                if banner_valid:
-                    text += f" → {banner_valid}"
-                text += "\n"
-            if ipv6:
-                text += f"🌐 IPv6: {ipv6}\n"
-            swaps = result.get("warp_swaps", 0)
-            retries = result.get("retry_count", 0)
-            refresh = result.get("warp_refresh", 0)
-            text += f"\n🔥 重试次数: {retries}\n🌐 ip更换次数: {swaps}\n⚡ warp刷新次数: {refresh}\n"
+            if result.get("skipped"):
+                text = (
+                    f"<b>🎮 {WOIDEN_TITLE} 续期报告</b>\n"
+                    f"{header}"
+                    f"✅ 有效期充足，无需续期\n"
+                    f"🖥️ 服务器: {hostname}\n"
+                    f"📍 位置: {location}\n"
+                    f"📊 状态: {status}\n"
+                    f"📅 到期日: {old_valid}（剩余 {result.get('days_left', '?')} 天）\n"
+                )
+                if ipv6:
+                    text += f"🌐 IPv6: {ipv6}\n"
+            else:
+                text = (
+                    f"<b>🎮 {WOIDEN_TITLE} 续期报告</b>\n"
+                    f"{header}"
+                    f"✅ 续期成功\n"
+                    f"🖥️ 服务器: {hostname}\n"
+                    f"📍 位置: {location}\n"
+                    f"📊 状态: {status}\n"
+                    f"📋 info 页面到期日对比: {expiry_info or '未读取到'}\n"
+                )
+                if old_valid:
+                    text += f"📋 横幅提取到期日: {old_valid}"
+                    if banner_valid:
+                        text += f" → {banner_valid}"
+                    text += "\n"
+                if ipv6:
+                    text += f"🌐 IPv6: {ipv6}\n"
+                swaps = result.get("warp_swaps", 0)
+                retries = result.get("retry_count", 0)
+                refresh = result.get("warp_refresh", 0)
+                text += f"\n🔥 重试次数: {retries}\n🌐 ip更换次数: {swaps}\n⚡ warp刷新次数: {refresh}\n"
         else:
             text = (
                 f"<b>🎮 {WOIDEN_TITLE} 续期报告</b>\n"
@@ -1456,6 +1506,54 @@ def notify(result: dict, username: str, tg_token: str = None, tg_chat: str = Non
         requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
             json={"chat_id": chat, "text": text, "parse_mode": "HTML"}, timeout=30)
         print("  [INFO] TG推送成功")
+    except Exception as e:
+        print(f"  [WARN] TG推送失败: {e}")
+
+
+def notify_provisioning(username: str, img: str = None, tg_token: str = None, tg_chat: str = None,
+                        ip_info: str = "", phone_mask: str = ""):
+    """VPS 排队/开机中（PENDING/PROCESS）通知：无需续期，非失败。"""
+    token = tg_token
+    chat = tg_chat
+    if not token or not chat: return
+    try:
+        masked_phone = phone_mask or mask(username)
+        header = _tg_header(masked_phone, chat, ip_info)
+        text = (
+            f"<b>🎮 {WOIDEN_TITLE} 续期报告</b>\n"
+            f"{header}"
+            f"⏳ 排队/开机中，无需续期\n"
+            f"📊 状态: PENDING/PROCESS（VPS 正在创建队列中，不可续期）\n"
+        )
+        if img and Path(img).exists():
+            send_tg_photo(token, chat, img, "🖥️ 当前 VPS 状态截图")
+        requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat, "text": text, "parse_mode": "HTML"}, timeout=30)
+        print("  [INFO] TG推送成功（排队/开机中）")
+    except Exception as e:
+        print(f"  [WARN] TG推送失败: {e}")
+
+
+def notify_no_server(username: str, img: str = None, tg_token: str = None, tg_chat: str = None,
+                     ip_info: str = "", phone_mask: str = "", status_note: str = ""):
+    """无可用服务器（未找到/创建失败）通知：非登录问题，无需续期。"""
+    token = tg_token
+    chat = tg_chat
+    if not token or not chat: return
+    try:
+        masked_phone = phone_mask or mask(username)
+        header = _tg_header(masked_phone, chat, ip_info)
+        text = (
+            f"<b>🎮 {WOIDEN_TITLE} 续期报告</b>\n"
+            f"{header}"
+            f"📭 无可用服务器，无需续期\n"
+            f"📊 状态: {status_note or '未找到可用服务器'}\n"
+        )
+        if img and Path(img).exists():
+            send_tg_photo(token, chat, img, "🖥️ 当前 VPS 状态截图")
+        requests.post(f"https://api.telegram.org/bot{token}/sendMessage",
+            json={"chat_id": chat, "text": text, "parse_mode": "HTML"}, timeout=30)
+        print("  [INFO] TG推送成功（无可用服务器）")
     except Exception as e:
         print(f"  [WARN] TG推送失败: {e}")
 
@@ -1546,14 +1644,18 @@ def check_turnstile_done(browser) -> bool:
 
 
 def woiden_handle_turnstile(browser, idx: int) -> bool:
-    """处理 页面上的 Turnstile"""
+    """处理 renew 页面上的 Turnstile 人机验证。
+    返回 True = 验证通过（可继续提交），False = 未通过（应换 IP 重试，不提交）。
+    """
     print("  [INFO] 处理 Turnstile...")
     time.sleep(2)
 
     dismiss_cookie_only(browser)
 
     if check_turnstile_done(browser):
-        print("  [INFO] Turnstile 已完成")
+        print("  [INFO] Turnstile 已完成（直接检测到 token）")
+        # token 已生成，再等 5s 让 Cloudflare 服务器端完成验证
+        time.sleep(5)
         return True
 
     print("  [INFO] Turnstile 验证中...")
@@ -1564,6 +1666,7 @@ def woiden_handle_turnstile(browser, idx: int) -> bool:
 
         if check_turnstile_done(browser):
             print(f"  [INFO] Turnstile 通过 ({attempt+1}/3)")
+            time.sleep(5)
             return True
 
         if not clicked:
@@ -1573,7 +1676,8 @@ def woiden_handle_turnstile(browser, idx: int) -> bool:
     start = time.time()
     while time.time() - start < 30:
         if check_turnstile_done(browser):
-            print(f"  [INFO] Turnstile 已完成")
+            print("  [INFO] Turnstile 已完成")
+            time.sleep(5)
             return True
         time.sleep(2)
 
@@ -2124,13 +2228,26 @@ def woiden_get_vps_info(browser, idx: int) -> Tuple[List[Dict[str, str]], str, O
     sid_match = re.search(r'(\d{5,})', hostname)
     sid = sid_match.group(1) if sid_match else hostname
 
-    # 格式化 valid_until: "August 22, 2026" → "2026-08-22"
+    # 格式化 valid_until（woiden 为 "2026-09-03 00:00:00"，
+    # hax 为 "September 10, 2026"，兼容两种）→ "2026-09-03"
     raw_valid = (info or {}).get("Valid until", "")
     valid_until = raw_valid
-    try:
-        valid_until = datetime.strptime(raw_valid, "%B %d, %Y").strftime("%Y-%m-%d")
-    except Exception:
-        pass
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%B %d, %Y"):
+        try:
+            valid_until = datetime.strptime(raw_valid, fmt).strftime("%Y-%m-%d")
+            break
+        except Exception:
+            continue
+
+    # 服务器侧当前时间（用于"剩余有效期足够则跳过续期"的基准日期）
+    current_date = ""
+    raw_cur = (info or {}).get("Current time", "")
+    for fmt in ("%Y-%m-%d %H:%M:%S", "%B %d, %Y"):
+        try:
+            current_date = datetime.strptime(raw_cur.strip(), fmt).strftime("%Y-%m-%d")
+            break
+        except Exception:
+            continue
 
     if sid:
         servers.append({
@@ -2138,6 +2255,7 @@ def woiden_get_vps_info(browser, idx: int) -> Tuple[List[Dict[str, str]], str, O
             "name": (info or {}).get("Location", "Unknown"),
             "status": (info or {}).get("Status", "").replace("check real time status here", "").strip(),
             "valid_until": valid_until,
+            "current_date": current_date,
             "hostname": hostname,
             "ipv6": (info or {}).get("IPv6", ""),
             "location": (info or {}).get("Location", ""),
@@ -2153,6 +2271,14 @@ def woiden_get_vps_info(browser, idx: int) -> Tuple[List[Dict[str, str]], str, O
         page_text = browser.execute_script("return document.body ? document.body.innerText : ''") or ""
         if "no vps" in page_text.lower() or "no server" in page_text.lower() or "belum" in page_text.lower():
             return [], "", screenshot
+        # PENDING/PROCESS：VPS 排队/开机中；FAILED：创建失败
+        status_text = (info or {}).get("Status", "").upper()
+        if "PENDING" in status_text or "PROCESS" in status_text:
+            _dbg("VPS 状态 PENDING/PROCESS，正在排队/开机中，无需续期")
+            return [], "PROVISIONING", screenshot
+        if "FAILED" in status_text:
+            _dbg("VPS 状态 FAILED，创建失败，无可用服务器")
+            return [], "FAILED", screenshot
         return [], "⚠️ 未找到服务器", screenshot
 
     return servers, "", screenshot
@@ -2426,8 +2552,8 @@ def _renew_fill_form(browser, idx: int, sid_f: str, proxy: str = None) -> None:
 
     time.sleep(2)
 
-    # 解 Turnstile
-    woiden_handle_turnstile(browser, idx)
+    # woiden renew 表单没有 Turnstile，验证码即下方图片四则运算；
+    # 历史版本的 Turnstile 预检步骤已移除，避免误判导致提前中断。
     time.sleep(2)
 
     # 解算术验证码（woiden 续期表单上的四则运算验证码，提交前必须解掉，
@@ -2447,6 +2573,35 @@ def _renew_fill_form(browser, idx: int, sid_f: str, proxy: str = None) -> None:
     except Exception as e:
         print(f"  [ERROR] 提交失败: {e}")
         raise
+
+    # woiden 提交依赖 reCAPTCHA v3：按钮点击后 JS 会异步 grecaptcha.execute()
+    # 并把 <input hidden name="token"> 注入表单，随后 AJAX POST /renew-vps-process/。
+    # 数据中心 IP 评分低或 reCAPTCHA 加载失败时 token 不会生成，AJAX 不发，response 恒为空。
+    token_ok = False
+    deadline = time.time() + 20
+    while time.time() < deadline:
+        try:
+            token_ok = bool(browser.execute_script('''
+                var t = document.querySelector('#form-submit input[name="token"]');
+                return t && t.value && t.value.length > 20;
+            '''))
+            if token_ok:
+                print("  [INFO] reCAPTCHA v3 token 已注入，等待服务器响应...")
+                break
+        except Exception:
+            pass
+        time.sleep(1)
+    if not token_ok:
+        try:
+            resp_now = browser.execute_script('''
+                var resp = document.getElementById('response');
+                return resp ? (resp.textContent || '').trim() : '';
+            ''')
+        except Exception:
+            resp_now = ""
+        if not resp_now:
+            print("  [WARN] reCAPTCHA v3 token 未生成（IP 评分低或 reCAPTCHA 不可用），将换 IP 重试")
+            raise CaptchaBlocked("renew 表单 reCAPTCHA v3 token 未生成")
 
     time.sleep(5)
     safe_screenshot(browser, shot(idx, f"renew_{sid_f}_after_submit"))
@@ -2564,11 +2719,34 @@ def _renew_navigate_to_code_page(browser, idx: int, sid_f: str, proxy: Optional[
             ''')
             if link_info:
                 break
+            # 服务器可能已返回 reCAPTCHA v3 拒绝等错误信息，提前识别并换 IP 重试，
+            # 而不是干等 30 秒超时
+            resp_txt = browser.execute_script('''
+                var resp = document.getElementById('response');
+                return resp ? (resp.textContent || '').trim() : '';
+            ''')
+            if resp_txt and any(k in resp_txt.lower() for k in
+                                ("robot verification failed", "captcha",
+                                 "try again", "verification failed")):
+                print(f"  [WARN] 服务器拒绝提交: {resp_txt[:200]!r}")
+                raise CaptchaBlocked(f"renew 表单提交被拒: {resp_txt[:120]}")
+        except CaptchaBlocked:
+            raise
         except Exception:
             pass
         time.sleep(0.5)
 
     if not link_info:
+        # 诊断：读取 #response 内容并截图，便于判断服务器返回的是错误还是链接变更
+        try:
+            resp_txt = browser.execute_script('''
+                var resp = document.getElementById('response');
+                return resp ? (resp.textContent || '').trim() : '(no #response)';
+            ''')
+            print(f"  [WARN] 未找到 INPUT RENEW CODE 链接，#response 内容: {str(resp_txt)[:300]!r}")
+            safe_screenshot(browser, shot(idx, f"renew_{sid_f}_no_code_link"))
+        except Exception as e:
+            print(f"  [WARN] 读取 #response 失败: {e}")
         raise RuntimeError("30 秒内未找到 INPUT RENEW CODE 链接")
 
     before_url = browser.get_current_url()
@@ -2914,6 +3092,31 @@ def renew(browser, server_info: Dict[str, str], idx: int, phone: str,
     hostname = server_info.get("hostname", "")
     old_valid_until = server_info.get("valid_until", "")
 
+    # ── 到期日充足判断：剩余天数 ≥ MIN_VALID_DAYS 时跳过续期 ──────────
+    valid_date = _parse_iso_date(old_valid_until)
+    base_date = _parse_iso_date(server_info.get("current_date", "")) or cn_now().date()
+    if valid_date is not None and (valid_date - base_date).days >= MIN_VALID_DAYS:
+        days_left = (valid_date - base_date).days
+        result = {
+            "server_id": sid, "server_name": server_name, "hostname": hostname,
+            "status": server_info.get("status", ""),
+            "ipv6": server_info.get("ipv6", ""),
+            "location": server_info.get("location", ""),
+            "phoneMask": phone_mask or mask_phone(phone),
+            "success": True, "skipped": True, "days_left": days_left,
+            "message": f"✅ 有效期充足（剩余 {days_left} 天，至 {old_valid_until}），无需续期",
+            "detailMessage": "", "screenshot": None,
+            "warp_swaps": 0, "warp_refresh": 0, "retry_count": 0,
+            "old_valid_until": old_valid_until, "new_valid_until": old_valid_until,
+            "vps_info_screenshot": server_info.get("vps_info_screenshot", ""),
+            "_idx": idx,
+        }
+        print(f"\n{'─'*40}")
+        print(f"  [INFO] ✅ 跳过续期: {server_name} 剩余 {days_left} 天（≥ {MIN_VALID_DAYS} 天），无需续期")
+        print(f"{'─'*40}")
+        notify(result, phone, tg_token=tg_token, tg_chat=tg_chat, ip_info=ip_info)
+        return result
+
     # 记录本次续期过程中的换 IP 次数、warp 刷新次数与外层重试次数
     get_warp_manager().current_tag = phone_mask or mask_phone(phone)
     warp_start = get_warp_manager().rotation_count
@@ -3073,9 +3276,24 @@ def process(browser, phone: str, idx: int, tg_token: str = None, tg_chat: str = 
     # 2. 查询 VPS 信息
     servers, error, dash_shot = woiden_get_vps_info(browser, idx)
     if error and not servers:
-        result["message"] = error
-        notify_login_fail(phone, dash_shot, tg_token=tg_token, tg_chat=tg_chat, ip_info=ip_info,
-                          phone_mask=result.get("phoneMask", ""))
+        if error == "PROVISIONING":
+            # VPS 排队/开机中（PENDING/PROCESS），不是失败，无需续期
+            result["message"] = "排队/开机中，无需续期"
+            result["success"] = True
+            notify_provisioning(phone, dash_shot, tg_token=tg_token, tg_chat=tg_chat,
+                                ip_info=ip_info, phone_mask=result.get("phoneMask", ""))
+        elif error == "FAILED":
+            # VPS 创建失败（FAILED），无可用服务器，非登录问题
+            result["message"] = "无可用服务器，无需续期"
+            result["success"] = True
+            notify_no_server(phone, dash_shot, tg_token=tg_token, tg_chat=tg_chat,
+                             ip_info=ip_info, phone_mask=result.get("phoneMask", ""),
+                             status_note="FAILED（VPS 创建失败）")
+        else:
+            result["message"] = error
+            notify_no_server(phone, dash_shot, tg_token=tg_token, tg_chat=tg_chat,
+                             ip_info=ip_info, phone_mask=result.get("phoneMask", ""),
+                             status_note="未找到可用服务器")
         logout(browser)
         return result
 

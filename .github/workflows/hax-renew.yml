@@ -10,20 +10,74 @@ permissions:
   actions: write
 
 jobs:
+  # 先解析 BATCH，自动检测账号数量并生成 matrix：
+  #   1 个账号 → 1 个 job；2 个账号 → 2 个独立 job，互不干扰。
+  # 每个账号在独立容器中单独登录/续期，彻底避免同一浏览器
+  # 连续跑多个账号时的状态残留（第二个账号 Telegram iframe 断连）。
+  # 账号信息只以掩码形式出现在日志，完整凭据仅通过 job 间内部输出传递。
+  build-matrix:
+    runs-on: ubuntu-latest
+    outputs:
+      accounts: ${{ steps.gen.outputs.accounts }}
+      display: ${{ steps.gen.outputs.display }}
+    steps:
+      - name: 检测 BATCH 并生成账号矩阵
+        id: gen
+        env:
+          BATCH: ${{ secrets.BATCH }}
+        run: |
+          python3 - <<'PY'
+          import json, os, sys
+          value = os.environ.get("BATCH", "").strip().replace("\\n", ";")
+          accounts = [x.strip() for x in value.split(";") if x.strip()]
+          if not accounts:
+              raise SystemExit("BATCH 未设置或为空")
+          def mask_phone(phone):
+              # job 名/日志只显示手机号末 3 位：+86-13xxxxxxxx880 → ***880
+              p = phone.strip()
+              return f"***{p[-3:]}"
+
+          # accounts[0] 为占位元素，使 1-based 序号可直接作为数组下标
+          # （GitHub 表达式不支持算术，无法用 [index - 1] 定位）
+          matrix = [{"index": 0}]
+          display = []
+          for index, account in enumerate(accounts, 1):
+              fields = [x.strip() for x in account.split(",")]
+              if len(fields) < 6 or any(not fields[i] for i in range(6)):
+                  raise SystemExit(f"BATCH 第 {index} 个账号字段不足或存在空字段")
+              matrix.append({"index": index, "batch": account,
+                             "mask": mask_phone(fields[0])})
+              # 矩阵只暴露脱敏字段（序号 + 掩码手机号），完整账号不进入矩阵上下文；
+              # 用掩码而非 chat_id，避免多个账号共享同一 TG 接收人时 job 名无法区分
+              display.append({"index": index, "mask": mask_phone(fields[0])})
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"accounts={json.dumps(matrix)}\n")
+              f.write(f"display={json.dumps(display)}\n")
+          print(f"BATCH 预检通过：{len(accounts)} 个账号，将拆分为 {len(accounts)} 个独立 job 并发执行")
+          for m in matrix[1:]:
+              print(f"  - 账号 #{m['index']}: {m['mask']}")
+          PY
+
   renew:
+    # 矩阵只含脱敏字段（序号 + TG chat_id），GitHub 自动附加到 job 名时
+    # 不会出现手机号/令牌/session 等敏感信息
+    name: "Hax 续期"
+    needs: build-matrix
     runs-on: ubuntu-latest
     timeout-minutes: 60
     concurrency:
-      group: Hax_Renew
+      # 每个账号独立一组，矩阵 job 并行执行（同账号的重复运行仍防重叠）
+      group: Hax_Renew_${{ matrix.account.index }}
       cancel-in-progress: false
+    strategy:
+      fail-fast: false
+      matrix:
+        account: ${{ fromJSON(needs.build-matrix.outputs.display) }}
     env:
-      # ════════════════════════════════════════════════════════════════
-      # Secrets（在仓库 → Settings → Secrets 中配置）
-      # ════════════════════════════════════════════════════════════════
-      # hax.co.id 账号，多个用分号分隔：
-      #   phone,tg_bot_token,tg_chat_id,tg_api_id,tg_api_hash,tg_session
-      #   TG 凭据（后三个字段）由每账号独立提供
-      BATCH: ${{ secrets.BATCH }}
+      # 每个 job 只处理一个账号：完整账号从内部输出按序号索引取用，
+      # 不经过矩阵上下文，避免出现在 job 名称/矩阵 UI 中
+      BATCH: ${{ fromJSON(needs.build-matrix.outputs.accounts)[matrix.account.index].batch }}
+      ACCOUNT_MASK: ${{ fromJSON(needs.build-matrix.outputs.accounts)[matrix.account.index].mask }}
       # 代理
       PROXY_CONTENT: ${{ secrets.PROXY_URL }}
       SOCKS_PORT: ${{ secrets.SOCKS_PORT || '10808' }}
@@ -31,13 +85,12 @@ jobs:
       SCREENSHOT_DIR: screenshots
       DEBUG_FLAG: "1"
       # 续期重试次数（外层）
-      MAX_RENEW_RETRIES: "0"
+      MAX_RENEW_RETRIES: "5"
       # IP 被封时切换 WARP 重试次数（内层）
-      # 所以一共会重试 3*5=15 次
       MAX_WARP_RETRIES: "10"
       # 登录重试次数
       MAX_LOGIN_RETRIES: "1"
-      # 脚本（hax-renew.py）与工作流同仓库，已由首个 checkout 检出到根目录，
+      # 脚本（hax-renew.py）与工作流同仓库，已由 checkout 检出到根目录，
       # 无需再检出私有仓库。
 
     steps:
@@ -46,27 +99,6 @@ jobs:
 
       - name: 创建输出目录
         run: mkdir -p ${{ env.SCREENSHOT_DIR }}
-
-      - name: 校验 BATCH
-        env:
-          BATCH: ${{ secrets.BATCH }}
-        run: |
-          python3 - <<'PY'
-          import os, sys
-          value = os.environ.get("BATCH", "").strip()
-          if not value:
-              raise SystemExit("BATCH 未设置或为空")
-          accounts = [x.strip() for x in value.replace("\\n", ";").split(";") if x.strip()]
-          if not accounts:
-              raise SystemExit("BATCH 没有有效账号")
-          for index, account in enumerate(accounts, 1):
-              fields = [x.strip() for x in account.split(",")]
-              if len(fields) < 6:
-                  raise SystemExit(f"BATCH 第 {index} 个账号字段不足：需要 phone,bot_token,chat_id,api_id,api_hash,session")
-              if any(not fields[i] for i in range(6)):
-                  raise SystemExit(f"BATCH 第 {index} 个账号存在空字段")
-          print(f"BATCH 预检通过：{len(accounts)} 个账号，凭据内容已隐藏")
-          PY
 
       - name: 设置 Python
         uses: actions/setup-python@v7
@@ -113,15 +145,10 @@ jobs:
           rm -rf "/tmp/sing-box-${SB_VER}-linux-amd64" "$ARCHIVE"
           echo "[INFO] sing-box $(./sing-box version | head -1)"
 
-      - name: 随机延迟
-        run: |
-          delay=$((RANDOM % 1))
-          echo "随机延迟: ${delay}秒"
-          sleep $delay
-
       - name: 执行续期
         run: |
           set -o pipefail
+          echo "[INFO] 开始续期: 账号 #${{ matrix.account.index }} (${{ env.ACCOUNT_MASK }})"
           python3 -u hax-renew.py 2>&1 | tee hax-renew.log &
           renew_pid=$!
           while kill -0 "$renew_pid" 2>/dev/null; do
@@ -134,7 +161,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: hax-screenshots-${{ github.run_id }}
+          name: hax-screenshots-${{ matrix.account.index }}-${{ github.run_id }}
           path: ${{ env.SCREENSHOT_DIR }}
           retention-days: 7
           if-no-files-found: warn
@@ -143,7 +170,7 @@ jobs:
         if: always()
         uses: actions/upload-artifact@v7
         with:
-          name: hax-renew-log-${{ github.run_id }}
+          name: hax-renew-log-${{ matrix.account.index }}-${{ github.run_id }}
           path: hax-renew.log
           retention-days: 7
           if-no-files-found: warn
@@ -158,7 +185,7 @@ jobs:
           fi
 
       - name: 提交执行时间
-        if: always()
+        if: always() && matrix.account.index == 1
         run: |
           set -e
           git config user.name "github-actions[bot]"
@@ -185,7 +212,7 @@ jobs:
           exit 1
 
       - name: 🧹 清理旧的工作流运行记录
-        if: always()
+        if: always() && matrix.account.index == 1
         env:
           GH_TOKEN: ${{ github.token }}
         run: |

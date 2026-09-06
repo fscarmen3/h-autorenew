@@ -69,6 +69,8 @@ phone,tg_bot_token,tg_chat_id,tg_api_id,tg_api_hash,tg_session
 | `SOCKS_PORT` | ❌ | `10808` | 本地 SOCKS 代理端口 |
 | `SCREENSHOT_DIR` | ❌ | `output/screenshots` | 截图保存目录 |
 | `DEBUG_FLAG` | ❌ | `0` | 设为 `1` 输出调试日志 |
+| `HAX_MIN_VALID_DAYS` | ❌ | `5` | 剩余有效期 ≥ 该天数时跳过续期，只提示“有效期充足，无需续期” |
+| `WOIDEN_MIN_VALID_DAYS` | ❌ | `2` | woiden 脚本剩余有效期 ≥ 该天数时跳过续期，只提示“有效期充足，无需续期” |
 
 ### 获取 Telegram API ID 和 API Hash
 
