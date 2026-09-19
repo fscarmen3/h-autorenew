@@ -10,12 +10,83 @@ permissions:
   actions: write
 
 jobs:
+  # 前置粗筛：用 hax-time.txt（上次执行时间，UTC）判断距上次执行是否已达阈值（默认 5 天）。
+  # 未达阈值 → 直接跳过整套依赖安装/登录/续期流程，大幅缩短无谓构建时长；
+  # 达到阈值、文件缺失或解析失败 → 走下方完整流程（原逻辑保留）。
+  check-time:
+    runs-on: ubuntu-latest
+    outputs:
+      should_run: ${{ steps.decide.outputs.should_run }}
+      needed: ${{ steps.decide.outputs.needed }}
+    env:
+      BATCH: ${{ secrets.BATCH }}
+      TIME_FILE: hax-time.txt
+      SKIP_DAYS: "5"   # hax 阈值，对应脚本 HAX_MIN_VALID_DAYS，日后可在此调整
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: 按账户判断是否跳过本轮
+        id: decide
+        run: |
+          python3 - <<'PY'
+          import hashlib, json, os
+          from datetime import datetime, timezone
+
+          skip_days = int(os.environ.get("SKIP_DAYS", "5"))
+          time_file = os.environ.get("TIME_FILE", "hax-time.txt")
+          batch_val = os.environ.get("BATCH", "").strip().replace("\\n", ";")
+          accounts = [x.strip() for x in batch_val.split(";") if x.strip()]
+          key_of = lambda p: hashlib.md5(p.strip().encode()).hexdigest()[:8]
+
+          # 时间文件每行：账户hash,UTC时间。旧版单行格式会被忽略（按无记录处理，触发运行）。
+          records = {}
+          try:
+              with open(time_file, encoding="utf-8") as f:
+                  for line in f:
+                      line = line.strip()
+                      if "," in line:
+                          k, t = line.split(",", 1)
+                          records[k] = t
+          except FileNotFoundError:
+              print(f"{time_file} 不存在，全部账户视为需要运行")
+          except Exception as e:
+              print(f"时间文件解析失败（{e}），全部账户视为需要运行")
+
+          now = datetime.now(timezone.utc)
+          needed = []
+          for account in accounts:
+              phone = account.split(",", 1)[0].strip()
+              key = key_of(phone)
+              last = records.get(key)
+              run = True
+              if last is None:
+                  print(f"账户 {key} 无记录，视为需要运行")
+              else:
+                  try:
+                      last_dt = datetime.strptime(last, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+                      days = (now - last_dt).total_seconds() / 86400
+                      print(f"账户 {key} 距上次执行 {days:.2f} 天（UTC），阈值 {skip_days} 天")
+                      run = days >= skip_days
+                  except Exception as e:
+                      print(f"账户 {key} 时间解析失败（{e}），视为需要运行")
+              print(f"  -> {'✅运行' if run else '⏭️跳过'}")
+              if run:
+                  needed.append(account)
+
+          print(f"需要运行的账户：{len(needed)}/{len(accounts)}")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+              f.write(f"should_run={'true' if needed else 'false'}\n")
+              f.write(f"needed={json.dumps(needed)}\n")
+          PY
+
   # 先解析 BATCH，自动检测账号数量并生成 matrix：
   #   1 个账号 → 1 个 job；2 个账号 → 2 个独立 job，互不干扰。
   # 每个账号在独立容器中单独登录/续期，彻底避免同一浏览器
   # 连续跑多个账号时的状态残留（第二个账号 Telegram iframe 断连）。
   # 账号信息只以掩码形式出现在日志，完整凭据仅通过 job 间内部输出传递。
   build-matrix:
+    needs: check-time
+    if: needs.check-time.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     outputs:
       accounts: ${{ steps.gen.outputs.accounts }}
@@ -24,14 +95,13 @@ jobs:
       - name: 检测 BATCH 并生成账号矩阵
         id: gen
         env:
-          BATCH: ${{ secrets.BATCH }}
+          NEEDED: ${{ needs.check-time.outputs.needed }}
         run: |
           python3 - <<'PY'
-          import json, os, sys
-          value = os.environ.get("BATCH", "").strip().replace("\\n", ";")
-          accounts = [x.strip() for x in value.split(";") if x.strip()]
-          if not accounts:
-              raise SystemExit("BATCH 未设置或为空")
+          import json, os
+          needed = json.loads(os.environ.get("NEEDED", "[]"))
+          if not needed:
+              raise SystemExit("无需要运行的账户")
           def mask_phone(phone):
               # job 名/日志只显示手机号末 3 位：+86-13xxxxxxxx880 → ***880
               p = phone.strip()
@@ -41,10 +111,10 @@ jobs:
           # （GitHub 表达式不支持算术，无法用 [index - 1] 定位）
           matrix = [{"index": 0}]
           display = []
-          for index, account in enumerate(accounts, 1):
+          for index, account in enumerate(needed, 1):
               fields = [x.strip() for x in account.split(",")]
               if len(fields) < 6 or any(not fields[i] for i in range(6)):
-                  raise SystemExit(f"BATCH 第 {index} 个账号字段不足或存在空字段")
+                  raise SystemExit(f"NEEDED 第 {index} 个账号字段不足或存在空字段")
               matrix.append({"index": index, "batch": account,
                              "mask": mask_phone(fields[0])})
               # 矩阵只暴露脱敏字段（序号 + 掩码手机号），完整账号不进入矩阵上下文；
@@ -53,8 +123,8 @@ jobs:
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"accounts={json.dumps(matrix)}\n")
               f.write(f"display={json.dumps(display)}\n")
-          print(f"BATCH 预检通过：{len(accounts)} 个账号，将拆分为 {len(accounts)} 个独立 job 并发执行")
-          for m in matrix[1:]:
+          print(f"需要运行的账号：{len(needed)} 个，拆分为 {len(needed)} 个独立 job 并发执行")
+          for m in display:
               print(f"  - 账号 #{m['index']}: {m['mask']}")
           PY
 
@@ -184,28 +254,48 @@ jobs:
             echo "本地截图已清理"
           fi
 
-      - name: 提交执行时间
-        if: always() && matrix.account.index == 1
+      - name: 提交执行时间（按账户）
+        if: always()
         run: |
           set -e
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # hax-time.txt 可能被并发的 schedule/手动 run 同时更新。
-          # 每次以最新 origin/main 为基准重建提交，避免 pull --rebase 产生内容冲突。
+          # 每账户一行：账户hash,UTC时间。多账户 job 并发时，
+          # 每次基于最新 origin/main 更新自己的行再推送，冲突自动重试，互不覆盖。
+          PHONE="$(printf '%s' "$BATCH" | cut -d',' -f1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          KEY="$(python3 -c "import hashlib,sys;print(hashlib.md5(sys.argv[1].encode()).hexdigest()[:8])" "$PHONE")"
+          NOW="$(date -u +'%Y-%m-%d %H:%M:%S')"
           for attempt in 1 2 3; do
-            echo "提交执行时间，第 ${attempt}/3 次尝试"
+            echo "提交执行时间（账户 $KEY），第 ${attempt}/3 次尝试"
             git fetch origin refs/heads/main:refs/remotes/origin/main
             git reset --hard origin/main
-            date +'%Y-%m-%d %H:%M:%S' > hax-time.txt
+            python3 - "$KEY" "$NOW" <<'PY'
+          import sys
+          key, now = sys.argv[1], sys.argv[2]
+          fn = "hax-time.txt"
+          rows = {}
+          try:
+              with open(fn, encoding="utf-8") as f:
+                  for line in f:
+                      line = line.strip()
+                      if "," in line:
+                          k, t = line.split(",", 1)
+                          rows[k] = t
+          except FileNotFoundError:
+              pass
+          rows[key] = now
+          with open(fn, "w", encoding="utf-8") as f:
+              for k in sorted(rows):
+                  f.write(f"{k},{rows[k]}\n")
+          PY
             git add hax-time.txt
-            git commit -m "更新 Hax 时间文件: $(date +'%Y-%m-%d %H:%M:%S')"
+            git commit -m "更新 Hax 时间文件(按账户): $(date -u +'%Y-%m-%d %H:%M:%S') UTC"
             if git push origin HEAD:refs/heads/main; then
               echo "执行时间已提交"
               exit 0
             fi
             echo "推送发生并发冲突，重新获取远端后重试"
-            git reset --hard origin/main
             sleep 2
           done
           echo "3 次推送均失败"
