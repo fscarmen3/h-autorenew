@@ -18,6 +18,7 @@ jobs:
     outputs:
       should_run: ${{ steps.decide.outputs.should_run }}
       needed: ${{ steps.decide.outputs.needed }}
+      skipped: ${{ steps.decide.outputs.skipped }}
     env:
       BATCH: ${{ secrets.BATCH }}
       TIME_FILE: woiden-time.txt
@@ -54,6 +55,7 @@ jobs:
 
           now = datetime.now(timezone.utc)
           needed = []
+          skipped_meta = []
           for account in accounts:
               phone = account.split(",", 1)[0].strip()
               key = key_of(phone)
@@ -72,11 +74,58 @@ jobs:
               print(f"  -> {'✅运行' if run else '⏭️跳过'}")
               if run:
                   needed.append(account)
+              else:
+                  skipped_meta.append({"account": account, "days": days})
 
           print(f"需要运行的账户：{len(needed)}/{len(accounts)}")
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
               f.write(f"should_run={'true' if needed else 'false'}\n")
               f.write(f"needed={json.dumps(needed)}\n")
+              f.write(f"skipped={json.dumps(skipped_meta)}\n")
+          PY
+
+      - name: 通知跳过的账户
+        env:
+          SKIPPED: ${{ steps.decide.outputs.skipped }}
+          SKIP_DAYS: "2"
+        run: |
+          python3 - <<'PY'
+          import json, os, urllib.parse, urllib.request
+          from datetime import datetime, timezone, timedelta
+
+          skipped = json.loads(os.environ.get("SKIPPED", "[]"))
+          skip_days = int(os.environ.get("SKIP_DAYS", "2"))
+          if not skipped:
+              print("没有跳过的账户，无需通知")
+              exit(0)
+
+          now_bj = datetime.now(timezone.utc) + timedelta(hours=8)
+          now_utc = datetime.now(timezone.utc)
+          for item in skipped:
+              account = item["account"]
+              days = item.get("days")
+              fields = [x.strip() for x in account.split(",")]
+              if len(fields) < 3 or not fields[1] or not fields[2]:
+                  print("账户字段不足，跳过通知")
+                  continue
+              token, chat = fields[1], fields[2]
+              tail = fields[0][-3:] if fields[0] else "000"
+              days_txt = f"{days:.2f}" if days is not None else "?"
+              text = (
+                  f"🎮 <b>woiden.id</b> 续期报告\n"
+                  f"🕐 运行时间: {now_bj.strftime('%Y-%m-%d %H:%M:%S')} (北京时间)\n"
+                  f"🕐 运行时间: {now_utc.strftime('%Y-%m-%d %H:%M:%S')} (UTC)\n"
+                  f"👤 账号: ***{tail}\n"
+                  f"⏭️ 距上次执行 {days_txt} 天（阈值 {skip_days} 天），无需续期\n"
+              )
+              data = urllib.parse.urlencode({"chat_id": chat, "text": text, "parse_mode": "HTML"}).encode()
+              req = urllib.request.Request(
+                  f"https://api.telegram.org/bot{token}/sendMessage",
+                  data=data,
+                  headers={"Content-Type": "application/x-www-form-urlencoded"},
+              )
+              urllib.request.urlopen(req, timeout=15)
+              print(f"已通知跳过账户: ***{tail}")
           PY
 
   # 先解析 BATCH，自动检测账号数量并生成 matrix（与 hax 对齐）：
@@ -296,9 +345,11 @@ jobs:
               exit 0
             fi
             echo "推送发生并发冲突，重新获取远端后重试"
+            # 未更新成功时恢复工作树，保证时间文件该行保持原值（下次仍会触发运行）
+            git reset --hard origin/main
             sleep 2
           done
-          echo "3 次推送均失败"
+          echo "3 次推送均失败，时间未更新，下次仍会运行该账户"
           exit 1
 
       - name: 🧹 清理旧的工作流运行记录
