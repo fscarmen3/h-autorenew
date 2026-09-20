@@ -31,7 +31,7 @@ jobs:
         run: |
           python3 - <<'PY'
           import hashlib, json, os
-          from datetime import datetime, timezone
+          from datetime import datetime, timezone, timedelta
 
           skip_days = int(os.environ.get("SKIP_DAYS", "5"))
           time_file = os.environ.get("TIME_FILE", "hax-time.txt")
@@ -39,7 +39,7 @@ jobs:
           accounts = [x.strip() for x in batch_val.split(";") if x.strip()]
           key_of = lambda p: hashlib.md5(p.strip().encode()).hexdigest()[:8]
 
-          # 时间文件每行：账户hash,UTC时间。旧版单行格式会被忽略（按无记录处理，触发运行）。
+          # 时间文件每行：账户hash,到期日(YYYY-MM-DD) 或 NOVPS（无机器/失败状态）。
           records = {}
           try:
               with open(time_file, encoding="utf-8") as f:
@@ -53,7 +53,7 @@ jobs:
           except Exception as e:
               print(f"时间文件解析失败（{e}），全部账户视为需要运行")
 
-          now = datetime.now(timezone.utc)
+          today = datetime.now(timezone(timedelta(hours=8))).date()  # 北京时间日期，只算日期
           needed = []
           skipped_meta = []
           for account in accounts:
@@ -61,21 +61,26 @@ jobs:
               key = key_of(phone)
               last = records.get(key)
               run = True
+              days_left = None
               if last is None:
                   print(f"账户 {key} 无记录，视为需要运行")
               else:
-                  try:
-                      last_dt = datetime.strptime(last, "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-                      days = (now - last_dt).total_seconds() / 86400
-                      print(f"账户 {key} 距上次执行 {days:.2f} 天（UTC），阈值 {skip_days} 天")
-                      run = days >= skip_days
-                  except Exception as e:
-                      print(f"账户 {key} 时间解析失败（{e}），视为需要运行")
+                  val = last.strip()
+                  if val.upper() == "NOVPS":
+                      print(f"账户 {key} 状态 NOVPS（无机器），需要运行以更新到期日")
+                  else:
+                      try:
+                          valid = datetime.strptime(val, "%Y-%m-%d").date()
+                          days_left = (valid - today).days   # 整数天，不足一天算 0
+                          print(f"账户 {key} 剩余 {days_left} 天（到期 {val}，阈值 {skip_days} 天）")
+                          run = days_left < skip_days
+                      except Exception as e:
+                          print(f"账户 {key} 日期解析失败（{e}），视为需要运行")
               print(f"  -> {'✅运行' if run else '⏭️跳过'}")
               if run:
                   needed.append(account)
               else:
-                  skipped_meta.append({"account": account, "days": days})
+                  skipped_meta.append({"account": account, "days": days_left})
 
           print(f"需要运行的账户：{len(needed)}/{len(accounts)}")
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
@@ -116,7 +121,7 @@ jobs:
                   f"🕐 运行时间: {now_bj.strftime('%Y-%m-%d %H:%M:%S')} (北京时间)\n"
                   f"🕐 运行时间: {now_utc.strftime('%Y-%m-%d %H:%M:%S')} (UTC)\n"
                   f"👤 账号: ***{tail}\n"
-                  f"⏭️ 距上次执行 {days_txt} 天（阈值 {skip_days} 天），无需续期\n"
+                  f"⏭️ 剩余 {days_txt} 天（阈值 {skip_days} 天），无需续期\n"
               )
               data = urllib.parse.urlencode({"chat_id": chat, "text": text, "parse_mode": "HTML"}).encode()
               req = urllib.request.Request(
@@ -310,16 +315,24 @@ jobs:
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
 
-          # 每账户一行：账户hash,UTC时间。多账户 job 并发时，
+          # 每账户一行：账户hash,到期日 或 NOVPS。多账户 job 并发时，
           # 每次基于最新 origin/main 更新自己的行再推送，冲突自动重试，互不覆盖。
           PHONE="$(printf '%s' "$BATCH" | cut -d',' -f1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
           KEY="$(python3 -c "import hashlib,sys;print(hashlib.md5(sys.argv[1].encode()).hexdigest()[:8])" "$PHONE")"
-          NOW="$(date -u +'%Y-%m-%d %H:%M:%S')"
+          # 到期日/状态来自脚本写入的 hax-time-value.txt（Valid until 只算日期）
+          VALUE=""
+          if [ -f hax-time-value.txt ]; then
+            VALUE="$(grep "^$KEY," hax-time-value.txt | head -1 | cut -d',' -f2)"
+          fi
+          if [ -z "$VALUE" ]; then
+            echo "未获取到账户 $KEY 的到期日/状态，跳过时间更新（保持原值）"
+            exit 0
+          fi
           for attempt in 1 2 3; do
             echo "提交执行时间（账户 $KEY），第 ${attempt}/3 次尝试"
             git fetch origin refs/heads/main:refs/remotes/origin/main
             git reset --hard origin/main
-            python3 - "$KEY" "$NOW" <<'PY'
+            python3 - "$KEY" "$VALUE" <<'PY'
           import sys
           key, now = sys.argv[1], sys.argv[2]
           fn = "hax-time.txt"

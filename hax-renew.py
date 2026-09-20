@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 # -*- coding: utf-8 -*-
 
-import os, sys, time, platform, requests, re, json, subprocess, socket, threading
+import os, sys, time, platform, requests, re, json, subprocess, socket, threading, hashlib
 os.environ["PATH"] = os.path.expanduser("~/bin") + os.pathsep + os.environ.get("PATH", "")
 import tempfile, html as html_mod, random
 from datetime import datetime, timezone, timedelta, date
@@ -3666,6 +3666,25 @@ def main():
             s_status = "[INFO]" if s.get("success") else "[ERROR]"
             print(f"  {s_status} {s.get('server_name', 'Unknown')}: {s.get('message', '')}")
     print(f"{'='*40}")
+
+    # 输出各账户的时间文件值：有效到期日(YYYY-MM-DD) 或 NOVPS（无机器/失败状态）
+    try:
+        value_lines = []
+        for r in results:
+            phone = r.get("username", "")
+            key = hashlib.md5(phone.strip().encode()).hexdigest()[:8]
+            best = None
+            for s in r.get("servers", []):
+                vu = s.get("valid_until", "")
+                if _parse_iso_date(vu):
+                    if best is None or vu < best:
+                        best = vu
+            value_lines.append(f"{key},{best if best else 'NOVPS'}")
+        with open("hax-time-value.txt", "w", encoding="utf-8") as f:
+            f.write("\n".join(value_lines) + "\n")
+        print("[INFO] 时间文件值已写入 hax-time-value.txt")
+    except Exception as e:
+        print(f"[WARN] 时间文件值写入失败: {e}")
 
     # 发送 TG 汇总报告：仅当 BATCH 含多个账号时才发送；
     # 单账号由单台续期报告覆盖，这里只补打验证码求解统计到控制台。

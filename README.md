@@ -176,3 +176,12 @@ BATCH='...' python3 setup_tg_session.py <验证码> <密码>
 - 算术验证码通过 ddddocr OCR 识别，成功率较高
 - Telegram 验证码通过 Telethon 后台线程从 @HaxTG_bot 实时提取
 - 每个 TG 账号的 API 凭据独立，互不影响
+
+## 前置跳过机制（按账户）
+
+GitHub Actions 运行前先用时间文件（`hax-time.txt` / `woiden-time.txt`）粗筛，时间来源为**脚本解析到的 `Valid until` 到期日**：
+
+- 时间文件按账户记录一行：`账户hash,到期日(YYYY-MM-DD)` 或 `账户hash,NOVPS`（无机器/失败状态，如 FAILED/PENDING）
+- 脚本每次运行后把该账户的 `Valid until`（仅日期）写入 `hax-time-value.txt` / `woiden-time-value.txt`，由 workflow 提交步骤同步到时间文件；无机器账号写 `NOVPS`
+- `check-time` job 逐账户判断：`到期日 - 今天(北京时间, 整数天) < 阈值`（hax 5、woiden 2，见 workflow 内 `SKIP_DAYS`）才运行该账户；`NOVPS` / 无记录 / 解析失败一律运行（可能已开机成功，需要去更新到期日）
+- 剩足阈值的账户不跑，由 workflow 直接发送 Telegram "无需续期" 通知；全部账户都不需要运行时整个 workflow 仅执行 `check-time`
