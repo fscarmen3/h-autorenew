@@ -3735,7 +3735,9 @@ def main():
             key = hashlib.md5(phone.strip().encode()).hexdigest()[:8]
             best = None
             for s in r.get("servers", []):
-                vu = s.get("valid_until", "")
+                # r["servers"] 是 renew() 返回值：优先用续期后的 new_valid_until，
+                # 回退续期前的 old_valid_until（跳过续期时两者相同）
+                vu = s.get("new_valid_until") or s.get("old_valid_until") or ""
                 if _parse_iso_date(vu):
                     if best is None or vu < best:
                         best = vu
