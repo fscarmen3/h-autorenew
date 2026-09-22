@@ -17,7 +17,7 @@ jobs:
     runs-on: ubuntu-latest
     outputs:
       should_run: ${{ steps.decide.outputs.should_run }}
-      needed: ${{ steps.decide.outputs.needed }}
+      needed_indexes: ${{ steps.decide.outputs.needed_indexes }}
       skipped: ${{ steps.decide.outputs.skipped }}
     env:
       BATCH: ${{ secrets.BATCH }}
@@ -54,9 +54,9 @@ jobs:
               print(f"时间文件解析失败（{e}），全部账户视为需要运行")
 
           today = datetime.now(timezone(timedelta(hours=8))).date()  # 北京时间日期，只算日期
-          needed = []
+          needed_indexes = []
           skipped_meta = []
-          for account in accounts:
+          for index, account in enumerate(accounts, 1):
               phone = account.split(",", 1)[0].strip()
               key = key_of(phone)
               last = records.get(key)
@@ -78,19 +78,20 @@ jobs:
                           print(f"账户 {key} 日期解析失败（{e}），视为需要运行")
               print(f"  -> {'✅运行' if run else '⏭️跳过'}")
               if run:
-                  needed.append(account)
+                  needed_indexes.append(index)
               else:
-                  skipped_meta.append({"account": account, "days": days_left})
+                  skipped_meta.append({"index": index, "days": days_left})
 
-          print(f"需要运行的账户：{len(needed)}/{len(accounts)}")
+          print(f"需要运行的账户：{len(needed_indexes)}/{len(accounts)}")
           with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              f.write(f"should_run={'true' if needed else 'false'}\n")
-              f.write(f"needed={json.dumps(needed)}\n")
+              f.write(f"should_run={'true' if needed_indexes else 'false'}\n")
+              f.write(f"needed_indexes={json.dumps(needed_indexes)}\n")
               f.write(f"skipped={json.dumps(skipped_meta)}\n")
           PY
 
       - name: 通知跳过的账户
         env:
+          BATCH: ${{ secrets.BATCH }}
           SKIPPED: ${{ steps.decide.outputs.skipped }}
           SKIP_DAYS: "5"
         run: |
@@ -103,11 +104,16 @@ jobs:
           if not skipped:
               print("没有跳过的账户，无需通知")
               exit(0)
+          accounts = [x.strip() for x in os.environ.get("BATCH", "").replace("\\n", ";").split(";") if x.strip()]
 
           now_bj = datetime.now(timezone.utc) + timedelta(hours=8)
           now_utc = datetime.now(timezone.utc)
           for item in skipped:
-              account = item["account"]
+              idx = item.get("index", 0)
+              if not (0 < idx <= len(accounts)):
+                  print(f"序号 {idx} 超出范围，跳过通知")
+                  continue
+              account = accounts[idx - 1]
               days = item.get("days")
               fields = [x.strip() for x in account.split(",")]
               if len(fields) < 3 or not fields[1] or not fields[2]:
@@ -143,41 +149,39 @@ jobs:
     if: needs.check-time.outputs.should_run == 'true'
     runs-on: ubuntu-latest
     outputs:
-      accounts: ${{ steps.gen.outputs.accounts }}
       display: ${{ steps.gen.outputs.display }}
     steps:
-      - name: 检测 BATCH 并生成账号矩阵
+      - name: 按需要运行的序号生成账号矩阵
         id: gen
         env:
-          NEEDED: ${{ needs.check-time.outputs.needed }}
+          BATCH: ${{ secrets.BATCH }}
+          NEEDED: ${{ needs.check-time.outputs.needed_indexes }}
         run: |
           python3 - <<'PY'
           import json, os
-          needed = json.loads(os.environ.get("NEEDED", "[]"))
-          if not needed:
+          needed_indexes = json.loads(os.environ.get("NEEDED", "[]"))
+          if not needed_indexes:
               raise SystemExit("无需要运行的账户")
+          accounts = [x.strip() for x in os.environ.get("BATCH", "").replace("\\n", ";").split(";") if x.strip()]
           def mask_phone(phone):
               # job 名/日志只显示手机号末 3 位：+86-13xxxxxxxx880 → ***880
               p = phone.strip()
               return f"***{p[-3:]}"
 
-          # accounts[0] 为占位元素，使 1-based 序号可直接作为数组下标
-          # （GitHub 表达式不支持算术，无法用 [index - 1] 定位）
-          matrix = [{"index": 0}]
+          # 矩阵只放脱敏字段（原始账号序号 + 掩码手机号），
+          # 完整账号行不进入矩阵上下文，避免明文出现在 job 名/env 展示中
           display = []
-          for index, account in enumerate(needed, 1):
+          for index in needed_indexes:
+              if not (0 < index <= len(accounts)):
+                  raise SystemExit(f"序号 {index} 超出范围 1..{len(accounts)}")
+              account = accounts[index - 1]
               fields = [x.strip() for x in account.split(",")]
               if len(fields) < 6 or any(not fields[i] for i in range(6)):
                   raise SystemExit(f"NEEDED 第 {index} 个账号字段不足或存在空字段")
-              matrix.append({"index": index, "batch": account,
-                             "mask": mask_phone(fields[0])})
-              # 矩阵只暴露脱敏字段（序号 + 掩码手机号），完整账号不进入矩阵上下文；
-              # 用掩码而非 chat_id，避免多个账号共享同一 TG 接收人时 job 名无法区分
               display.append({"index": index, "mask": mask_phone(fields[0])})
-          with open(os.environ["GITHUB_OUTPUT"], "a") as f:
-              f.write(f"accounts={json.dumps(matrix)}\n")
+          with open(os.environ["GITHUB_OUTPUT"], "a", encoding="utf-8") as f:
               f.write(f"display={json.dumps(display)}\n")
-          print(f"需要运行的账号：{len(needed)} 个，拆分为 {len(needed)} 个独立 job 并发执行")
+          print(f"需要运行的账号：{len(display)} 个，拆分为 {len(display)} 个独立 job 并发执行")
           for m in display:
               print(f"  - 账号 #{m['index']}: {m['mask']}")
           PY
@@ -199,9 +203,11 @@ jobs:
         account: ${{ fromJSON(needs.build-matrix.outputs.display) }}
     env:
       # 每个 job 只处理一个账号：完整账号从内部输出按序号索引取用，
-      # 不经过矩阵上下文，避免出现在 job 名称/矩阵 UI 中
-      BATCH: ${{ fromJSON(needs.build-matrix.outputs.accounts)[matrix.account.index].batch }}
-      ACCOUNT_MASK: ${{ fromJSON(needs.build-matrix.outputs.accounts)[matrix.account.index].mask }}
+      # 完整账号只引用 secrets.BATCH（GitHub 日志自动掩码为 ***），
+      # 通过数字序号 BATCH_ACCOUNT_INDEX 指定本 job 处理哪个账号
+      BATCH: ${{ secrets.BATCH }}
+      BATCH_ACCOUNT_INDEX: ${{ matrix.account.index }}
+      ACCOUNT_MASK: ${{ matrix.account.mask }}
       # 代理
       PROXY_CONTENT: ${{ secrets.PROXY_URL }}
       SOCKS_PORT: ${{ secrets.SOCKS_PORT || '10808' }}
@@ -317,7 +323,19 @@ jobs:
 
           # 每账户一行：账户hash,到期日 或 NOVPS。多账户 job 并发时，
           # 每次基于最新 origin/main 更新自己的行再推送，冲突自动重试，互不覆盖。
-          PHONE="$(printf '%s' "$BATCH" | cut -d',' -f1 | sed 's/^[[:space:]]*//;s/[[:space:]]*$//')"
+          # 账号行只在 secrets.BATCH 内解析（日志自动掩码），不把分片账号写入 env
+          PHONE="$(python3 - <<'PY'
+          import os
+          accounts = [x.strip() for x in os.environ.get("BATCH", "").replace("\\n", ";").split(";") if x.strip()]
+          idx = int(os.environ.get("BATCH_ACCOUNT_INDEX", "0") or 0)
+          if 0 < idx <= len(accounts):
+              print(accounts[idx - 1].split(",", 1)[0].strip())
+          PY
+          )"
+          if [ -z "$PHONE" ]; then
+            echo "无法按序号定位账户，跳过时间更新"
+            exit 0
+          fi
           KEY="$(python3 -c "import hashlib,sys;print(hashlib.md5(sys.argv[1].encode()).hexdigest()[:8])" "$PHONE")"
           # 到期日/状态来自脚本写入的 hax-time-value.txt（Valid until 只算日期）
           VALUE=""
@@ -352,6 +370,10 @@ jobs:
                   f.write(f"{k},{rows[k]}\n")
           PY
             git add hax-time.txt
+            if git diff --cached --quiet -- hax-time.txt; then
+              echo "时间文件该行已是最新（由并发任务更新），无需提交"
+              exit 0
+            fi
             git commit -m "更新 Hax 时间文件(按账户): $(date -u +'%Y-%m-%d %H:%M:%S') UTC"
             if git push origin HEAD:refs/heads/main; then
               echo "执行时间已提交"

@@ -3526,6 +3526,18 @@ def main():
     accounts = parse_accounts(acc_str)
     if not accounts:
         print("[ERROR] BATCH中无有效账号"); sys.exit(1)
+    # 矩阵模式：只运行指定序号（1-based，对应 BATCH 中的位置）的账号；
+    # 完整 BATCH 仍只在 secrets.BATCH 内引用，避免明文进日志
+    only_idx = os.environ.get("BATCH_ACCOUNT_INDEX", "").strip()
+    if only_idx:
+        try:
+            only_idx = int(only_idx)
+            if only_idx < 1 or only_idx > len(accounts):
+                raise IndexError(f"序号 {only_idx} 超出范围 1..{len(accounts)}")
+            accounts = [accounts[only_idx - 1]]
+            print(f"[INFO] 矩阵模式：仅运行账号 #{only_idx}")
+        except Exception as e:
+            print(f"[ERROR] BATCH_ACCOUNT_INDEX 无效: {e}"); sys.exit(1)
 
     # 检查 TG 凭据：全局或每账号至少有一套
     has_global_tg = bool(TG_SESSION and TG_API_HASH)
