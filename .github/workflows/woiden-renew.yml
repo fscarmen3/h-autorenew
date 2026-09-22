@@ -121,7 +121,7 @@ jobs:
                   continue
               token, chat = fields[1], fields[2]
               tail = fields[0][-3:] if fields[0] else "000"
-              days_txt = f"{days:.2f}" if days is not None else "?"
+              days_txt = f"{days}" if days is not None else "?"
               text = (
                   f"🎮 <b>woiden.id</b> 续期报告\n"
                   f"🕐 运行时间: {now_bj.strftime('%Y-%m-%d %H:%M:%S')} (北京时间)\n"
