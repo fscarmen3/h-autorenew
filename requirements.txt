@@ -8,3 +8,4 @@ audioop-lts==0.2.2
 pydub==0.25.1
 ddddocr==1.6.1
 nest_asyncio==1.6.0
+beautifulsoup4>=4.12

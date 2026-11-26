@@ -10,6 +10,12 @@ from typing import Dict, Any, List, Tuple, Optional
 from DrissionPage import ChromiumPage, ChromiumOptions
 from gen_singbox_config import setup_proxy
 
+try:
+    from bs4 import BeautifulSoup
+    HAS_BS4 = True
+except ImportError:
+    HAS_BS4 = False
+
 # ── 可选依赖：reCAPTCHA 语音识别 ──────────────────────────────────────
 try:
     import speech_recognition as sr
@@ -1418,8 +1424,11 @@ def notify(result: dict, username: str, tg_token: str = None, tg_chat: str = Non
     try:
         masked_phone = result.get("phoneMask", mask(username))
         hostname = result.get("hostname", "")
-        # 服务器数字 ID = hostname 第一个 "_" 前的数字（如 5137122051_woiden... → 5137122051）
-        server_id = re.sub(r'_.*$', '', hostname) if hostname else ""
+        # 服务器数字 ID = hostname 第一个 "_" 前的数字（如 5137122051_woiden... → 5137122051）。
+        # 新版 hax 偶尔不再返回 Hostname，此时由 hax_get_vps_info() 用 IPv6 生成稳定兜底 ID。
+        server_id = str(result.get("server_id", "") or "")
+        if not server_id and hostname:
+            server_id = re.sub(r'_.*$', '', hostname)
         header = _tg_header(masked_phone, chat, ip_info, server_id=server_id)
         status = result.get("status", "")
         old_valid = result.get("old_valid_until", "")
@@ -1429,6 +1438,7 @@ def notify(result: dict, username: str, tg_token: str = None, tg_chat: str = Non
         ipv6 = result.get("ipv6", "")
         location = result.get("location", "")
         msg = result.get("message", "")
+        server_display = hostname or ipv6 or server_id or "未知"
 
         # 无论成功还是失败，最后发送最终 info 页面截图，并附带到期日对比。
         vps_shot = result.get("screenshot") or result.get("vps_info_screenshot", "")
@@ -1446,7 +1456,7 @@ def notify(result: dict, username: str, tg_token: str = None, tg_chat: str = Non
                     f"<b>🎮 {HAX_TITLE} 续期报告</b>\n"
                     f"{header}"
                     f"✅ 有效期充足，无需续期\n"
-                    f"🖥️ 服务器: {hostname}\n"
+                    f"🖥️ 服务器: {server_display}\n"
                     f"📍 位置: {location}\n"
                     f"📊 状态: {status}\n"
                     f"📅 到期日: {old_valid}（剩余 {result.get('days_left', '?')} 天）\n"
@@ -1458,7 +1468,7 @@ def notify(result: dict, username: str, tg_token: str = None, tg_chat: str = Non
                     f"<b>🎮 {HAX_TITLE} 续期报告</b>\n"
                     f"{header}"
                     f"✅ 续期成功\n"
-                    f"🖥️ 服务器: {hostname}\n"
+                    f"🖥️ 服务器: {server_display}\n"
                     f"📍 位置: {location}\n"
                     f"📊 状态: {status}\n"
                     f"📋 info 页面到期日对比: {expiry_info or '未读取到'}\n"
@@ -1479,7 +1489,7 @@ def notify(result: dict, username: str, tg_token: str = None, tg_chat: str = Non
                 f"<b>🎮 {HAX_TITLE} 续期报告</b>\n"
                 f"{header}"
                 f"❌ 续期失败\n"
-                f"🖥️ 服务器: {hostname}\n"
+                f"🖥️ 服务器: {server_display}\n"
                 f"📍 位置: {location}\n"
                 f"📊 状态: {status}\n"
                 f"📋 info 页面到期日对比: {expiry_info or '未读取到'}\n"
@@ -2152,6 +2162,114 @@ def _hax_login_flow_inner(browser, country_code: str, phone_num: str, raw: str,
     return False
 
 
+def _clean_vps_text(value: Any) -> str:
+    """把 HTML 节点的 textContent 压缩为单行，保留可读字段值。"""
+    return " ".join(str(value or "").replace("\xa0", " ").split())
+
+
+def _normalize_vps_status(value: Any) -> str:
+    """规范化 hax 的 Status 值，并移除状态旁的状态查询链接文案。"""
+    text = _clean_vps_text(value)
+    text = re.sub(r"check\s+real\s+time\s+status\s+here", " ", text,
+                  flags=re.IGNORECASE)
+    return _clean_vps_text(text).upper()
+
+
+def _parse_vps_info_html(html: str) -> Dict[str, str]:
+    """
+    从 /vps-info HTML 中提取 label/value 对，作为浏览器 JS 解析的兜底。
+
+    hax 页面历史上使用 .row + label + .col-* 布局，近期截图则表现为 table。
+    两种结构都解析，避免站点模板小改版后整页信息变成空字典。
+    """
+    if not html or not HAS_BS4:
+        return {}
+
+    try:
+        soup = BeautifulSoup(html, "html.parser")
+    except Exception as e:
+        print(f"  [WARN] vps-info HTML 解析失败: {type(e).__name__}: {e}")
+        return {}
+
+    info: Dict[str, str] = {}
+
+    def put(key: str, value: Any) -> None:
+        key = _clean_vps_text(key)
+        val = _clean_vps_text(value)
+        if key and val and key.lower() != val.lower():
+            info.setdefault(key, val)
+
+    # 1) table/tr 形式：Status | ACTIVE
+    for tr in soup.find_all("tr"):
+        cells = tr.find_all(["th", "td"], recursive=False)
+        if len(cells) < 2:
+            cells = tr.find_all(["th", "td"])
+        if len(cells) >= 2:
+            put(cells[0].get_text(" ", strip=True), cells[1].get_text(" ", strip=True))
+
+    # 2) Bootstrap .row 形式：label + .col-sm-7/.col-md-7
+    for row in soup.select(".row"):
+        label = row.find("label")
+        if not label:
+            continue
+        value_node = None
+        for selector in (".col-sm-7", ".col-md-7", ".col-7", ".col-sm-8", ".col-md-8"):
+            candidate = row.select_one(selector)
+            if candidate:
+                value_node = candidate
+                break
+        if value_node is None:
+            # 兼容 value 是 label 同级 div 的情况。
+            siblings = [c for c in row.find_all(recursive=False)
+                        if getattr(c, "name", None) and c.name != "label"]
+            if siblings:
+                value_node = siblings[-1]
+        if value_node is not None:
+            put(label.get_text(" ", strip=True), value_node.get_text(" ", strip=True))
+
+    # 3) definition list 形式：dt + dd
+    for dt in soup.find_all("dt"):
+        dd = dt.find_next_sibling("dd")
+        if dd:
+            put(dt.get_text(" ", strip=True), dd.get_text(" ", strip=True))
+
+    return info
+
+
+def _derive_vps_server_id(info: Dict[str, str]) -> str:
+    """
+    生成服务器稳定 ID。
+
+    旧页面：Hostname 通常为 <数字ID>_<名称>。
+    新页面：Hostname 可能为空，但 IPv6 仍然存在；续期 URL 本身不依赖这个 ID，
+    因此可用 IPv6 做稳定标识，保证 ACTIVE 服务器不会被误判成“无服务器”。
+    """
+    info = info or {}
+    hostname = _clean_vps_text(info.get("Hostname", ""))
+    if hostname:
+        sid_match = re.search(r'(\d{5,})', hostname)
+        return sid_match.group(1) if sid_match else hostname
+
+    ipv6 = _clean_vps_text(info.get("IPv6", ""))
+    if ipv6:
+        return f"ipv6:{ipv6}"
+    return ""
+
+
+def _vps_info_has_server(info: Dict[str, str]) -> bool:
+    """判断 info 页是否描述了一台 VPS；不能再以 Hostname 是否为空作为唯一条件。"""
+    info = info or {}
+    status = _normalize_vps_status(info.get("Status", ""))
+    known_statuses = {"ACTIVE", "PENDING", "PROCESS", "PROCESSING", "FAILED"}
+    if status in known_statuses:
+        return True
+    return bool(
+        _clean_vps_text(info.get("Hostname", ""))
+        or _clean_vps_text(info.get("IPv6", ""))
+        or _clean_vps_text(info.get("Username", ""))
+    )
+
+
 def hax_get_vps_info(browser, idx: int) -> Tuple[List[Dict[str, str]], str, Optional[str]]:
     """访问 /vps-info/，解析服务器列表"""
     servers, seen = [], set()
@@ -2197,7 +2315,8 @@ def hax_get_vps_info(browser, idx: int) -> Tuple[List[Dict[str, str]], str, Opti
 
     src = browser.get_page_source()
 
-    # 解析 label/div 对（VPS Information 用 Bootstrap form 布局）
+    # 解析 label/div 对（VPS Information 历史上用 Bootstrap form 布局）。
+    # 某些环境 execute_script 返回空/不完整，因此后面还会用原始 HTML 再兜底解析。
     try:
         info = browser.execute_script("""
             var info = {};
@@ -2221,11 +2340,41 @@ def hax_get_vps_info(browser, idx: int) -> Tuple[List[Dict[str, str]], str, Opti
     except Exception as e:
         print(f"  [WARN] label/div 解析失败: {e}")
         info = {}
+    info = info or {}
 
-    # 提取 VPS 标识（hostname 中的数字部分作为 ID）
+    # HTML 兜底/补全：兼容 table、.row、dl 三种结构。
+    # 某些浏览器环境下 execute_script 会返回空对象，若不补全会把真实 ACTIVE
+    # 机器误判成“无可用服务器”。
+    html_sources = [src]
+    try:
+        page_html = browser.page.html or ""
+        if page_html and page_html not in html_sources:
+            html_sources.append(page_html)
+    except Exception:
+        pass
+    for html_source in html_sources:
+        html_info = _parse_vps_info_html(html_source)
+        for k, v in html_info.items():
+            info.setdefault(k, v)
+
+    # 提取 VPS 标识：优先 hostname 数字 ID；hostname 为空时用 IPv6 稳定兜底。
     hostname = (info or {}).get("Hostname", "")
-    sid_match = re.search(r'(\d{5,})', hostname)
-    sid = sid_match.group(1) if sid_match else hostname
+    sid = _derive_vps_server_id(info)
+    status = _normalize_vps_status((info or {}).get("Status", ""))
+    ipv6 = _clean_vps_text((info or {}).get("IPv6", ""))
+    print(f"  [INFO] VPS info 解析: 状态={status or '未知'}, "
+          f"Hostname={'有' if hostname else '空'}, IPv6={'有' if ipv6 else '空'}, "
+          f"ID={safe_sid_for_filename(sid) if sid else '空'}")
+
+    # 状态分流必须先于“是否有服务器”判断：
+    # 即使 Hostname 有值，PENDING/PROCESS 也不能进入续期流程；
+    # FAILED 也不能被当成可续期机器。
+    if status in {"PENDING", "PROCESS", "PROCESSING"}:
+        _dbg(f"VPS 状态 {status}，正在排队/开机中，无需续期")
+        return [], "PROVISIONING", screenshot
+    if status == "FAILED":
+        _dbg("VPS 状态 FAILED，创建失败，无可用服务器")
+        return [], "FAILED", screenshot
 
     # 格式化 valid_until: "August 22, 2026" → "2026-08-22"
     raw_valid = (info or {}).get("Valid until", "")
@@ -2245,15 +2394,20 @@ def hax_get_vps_info(browser, idx: int) -> Tuple[List[Dict[str, str]], str, Opti
         except Exception:
             pass
 
-    if sid:
+    if not sid and _vps_info_has_server(info):
+        # 最后兜底：状态/IPv6/Hostname 已证明机器存在，但缺少可用标识。
+        location = re.sub(r'[^\w.-]+', '-', _clean_vps_text((info or {}).get("Location", "")))
+        sid = f"server-{location or status.lower() or 'active'}"
+
+    if _vps_info_has_server(info):
         servers.append({
             "id": sid,
             "name": (info or {}).get("Location", "Unknown"),
-            "status": (info or {}).get("Status", "").replace("check real time status here", "").strip(),
+            "status": status,
             "valid_until": valid_until,
             "current_date": current_date,
             "hostname": hostname,
-            "ipv6": (info or {}).get("IPv6", ""),
+            "ipv6": ipv6,
             "location": (info or {}).get("Location", ""),
             "disk": (info or {}).get("Total disk space", ""),
             "ram": (info or {}).get("Ram", ""),
@@ -2267,14 +2421,6 @@ def hax_get_vps_info(browser, idx: int) -> Tuple[List[Dict[str, str]], str, Opti
         page_text = browser.execute_script("return document.body ? document.body.innerText : ''") or ""
         if "no vps" in page_text.lower() or "no server" in page_text.lower() or "belum" in page_text.lower():
             return [], "", screenshot
-        # PENDING/PROCESS：VPS 排队/开机中，无需续期
-        status_text = (info or {}).get("Status", "").upper()
-        if "PENDING" in status_text or "PROCESS" in status_text:
-            _dbg("VPS 状态 PENDING/PROCESS，正在排队/开机中，无需续期")
-            return [], "PROVISIONING", screenshot
-        if "FAILED" in status_text:
-            _dbg("VPS 状态 FAILED，创建失败，无可用服务器")
-            return [], "FAILED", screenshot
         return [], "⚠️ 未找到服务器", screenshot
 
     return servers, "", screenshot
